@@ -12,7 +12,7 @@ router = APIRouter()
 
 
 class ApproveRequest(BaseModel):
-    approved_by: str = "founder"
+    approved_by: str
 
 
 class RejectRequest(BaseModel):
