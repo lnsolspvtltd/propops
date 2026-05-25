@@ -1,6 +1,6 @@
 """Approval queue API routes."""
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,7 +48,7 @@ async def approve_draft(draft_id: str, req: ApproveRequest, db: AsyncSession = D
         raise HTTPException(status_code=404, detail="Draft not found")
     draft.status = "approved"
     draft.approved_by = req.approved_by
-    draft.approved_at = datetime.utcnow()
+    draft.approved_at = datetime.now(timezone.utc)
     await db.commit()
     return {"status": "approved", "draft_id": draft_id}
 
