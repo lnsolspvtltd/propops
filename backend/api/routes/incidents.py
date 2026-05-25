@@ -91,4 +91,3 @@ async def get_incident(incident_id: str, db: AsyncSession = Depends(get_db)):
         "created_at": inc.created_at.isoformat() if inc.created_at else "",
         "drafts": drafts,
     }
----
