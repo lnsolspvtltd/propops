@@ -279,4 +279,3 @@ async def get_incident_history(
         history=[],
     )
 
----
