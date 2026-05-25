@@ -14,4 +14,3 @@ services:
     # Additional dev overrides
     # Example: faster rebuild on file changes
     pass_through: true
----
