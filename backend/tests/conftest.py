@@ -15,4 +15,3 @@ def event_loop():
 def anyio_backend():
     """Use asyncio backend for anyio tests."""
     return "asyncio"
-</end>
