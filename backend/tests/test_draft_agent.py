@@ -328,3 +328,21 @@ class TestSubjectLineGeneration:
         """Test tenant reply uses Re: format."""
         subject = _generate_subject_line("Sink broken", "MEDIUM", "tenant_reply")
         assert subject.
+startswith('Re:')
+
+    def test_vendor_outreach_subject_format(self):
+        """Test vendor outreach uses action-oriented subject."""
+        subject = _generate_subject_line('Plumbing leak', 'HIGH', 'vendor_outreach')
+        assert isinstance(subject, str)
+        assert len(subject) > 0
+
+    def test_emergency_urgency_adds_prefix(self):
+        """Test EMERGENCY urgency adds URGENT: prefix."""
+        subject = _generate_subject_line('Flood', 'EMERGENCY', 'tenant_reply')
+        assert subject.startswith('URGENT:')
+
+    def test_subject_line_max_length(self):
+        """Test subject line does not exceed 100 characters."""
+        long_title = 'A' * 200
+        subject = _generate_subject_line(long_title, 'MEDIUM', 'tenant_reply')
+        assert len(subject) <= 100
