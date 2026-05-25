@@ -21,4 +21,3 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_units_property_id_email
 -- Comment for documentation
 COMMENT ON INDEX idx_units_tenant_email_lower IS 
     'Enables fast tenant email lookup for context resolution. Case-insensitive.';
----
