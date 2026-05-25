@@ -18,4 +18,3 @@ def mock_db():
     """Mock async database session."""
     db = AsyncMock(spec=AsyncSession)
     return db
----
