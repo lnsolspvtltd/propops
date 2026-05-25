@@ -12,6 +12,7 @@ Settings validation is eager: get_settings() is called at app startup to fail fa
 with clear error messages if configuration is invalid or missing required secrets.
 
 For testing, call get_settings.cache_clear() in test fixtures to reset singleton state.
+See conftest.py for example fixture pattern.
 """
 import logging
 from functools import lru_cache
@@ -140,163 +141,122 @@ class Settings(BaseSettings):
     )
     allowed_origins: list[str] = Field(
         default=["http://localhost:3000"],
-        description="Allowed CORS origins (comma-separated, no wildcards in production)"
+        description="Allowed CORS origins (explicit list, never wildcard in production)"
     )
 
-    # ── Integrations ─────────────────────────────────────────────────────────
-    anthropic_api_key: Optional[str] = Field(
-        default=None,
-        description="Anthropic Claude API key (optional — required only if AI features enabled)"
-    )
-    supabase_url: Optional[str] = Field(
-        default=None,
-        description="Supabase project URL (optional — required only if Supabase backend enabled)"
-    )
+    # ── Supabase ─────────────────────────────────────────────────────────────
     supabase_service_key: Optional[str] = Field(
         default=None,
-        description="Supabase service role key (never use anon key; required only if Supabase backend enabled)"
-    )
-    imap_host: Optional[str] = Field(
-        default=None,
-        description="IMAP server hostname for email ingestion (optional)"
-    )
-    imap_port: int = Field(
-        default=993,
-        ge=1,
-        le=65535,
-        description="IMAP server port (default: 993 for IMAPS)"
-    )
-    imap_username: Optional[str] = Field(
-        default=None,
-        description="IMAP username for authentication (optional)"
-    )
-    imap_password: Optional[str] = Field(
-        default=None,
-        description="IMAP password for authentication (optional, never hardcoded, set via deployment platform)"
+        description="Supabase service_role API key (server-side only, never expose to client). "
+                    "Required for admin operations. SECURITY-REVIEW: Enforce least-privilege scopes."
     )
 
-    @field_validator("environment", mode="after")
+    # ── AI / LLM ─────────────────────────────────────────────────────────────
+    anthropic_api_key: Optional[str] = Field(
+        default=None,
+        description="Anthropic API key for Claude models. Optional — only required if using AI features."
+    )
+
+    @field_validator('environment')
     @classmethod
     def validate_environment(cls, v: str) -> str:
         """Validate environment is one of allowed values."""
-        if v not in ("development", "staging", "production"):
-            raise ValueError(f"environment must be one of: development, staging, production. Got: {v}")
+        allowed = {'development', 'staging', 'production'}
+        if v.lower() not in allowed:
+            raise ValueError(f"environment must be one of {allowed}, got {v}")
+        return v.lower()
+
+    @field_validator('debug')
+    @classmethod
+    def validate_debug(cls, v: bool, info) -> bool:
+        """Ensure debug mode is disabled in production."""
+        data = info.data
+        if data.get('environment') == 'production' and v:
+            raise ValueError("debug must be False in production environment")
         return v
 
-    @field_validator("debug", mode="after")
+    @field_validator('secret_key')
     @classmethod
-    def validate_debug_disabled_in_production(cls, v: bool, info) -> bool:
-        """Enforce debug=False in production for security."""
-        environment = info.data.get("environment", "development")
-        if v and environment == "production":
-            raise ValueError("debug=True is not allowed in production environment")
-        return v
-
-    @field_validator("database_url", mode="after")
-    @classmethod
-    def validate_database_url_required_in_production(cls, v: Optional[str], info) -> Optional[str]:
-        """Enforce database_url is set in production and non-development."""
-        environment = info.data.get("environment", "development")
-        if environment != "development" and not v:
-            raise ValueError(f"database_url is required in {environment} environment; cannot be None")
-        return v
-
-    @field_validator("secret_key", mode="after")
-    @classmethod
-    def validate_secret_key_strength_in_production(cls, v: str, info) -> str:
-        """Enforce strong secret keys in production and staging.
-        
-        SECURITY-REVIEW: Weak secrets (dev-*) are rejected in non-development.
-        This prevents accidental use of development secrets in production.
-        """
-        environment = info.data.get("environment", "development")
-        if environment in ("staging", "production"):
-            if v.startswith("dev-") or len(v) < 32:
+    def validate_secret_key(cls, v: str, info) -> str:
+        """Ensure secret_key is strong in production."""
+        data = info.data
+        if data.get('environment') == 'production':
+            if v.startswith('dev-') or len(v) < 32:
                 raise ValueError(
-                    f"secret_key must be strong in {environment}. "
-                    f"Weak defaults (dev-*) and short keys (<32 chars) are rejected. "
-                    f"Generate with: openssl rand -hex 32"
+                    "secret_key must be 32+ characters and NOT start with 'dev-' in production. "
+                    "Use a cryptographically strong random key."
                 )
         return v
 
-    @field_validator("jwt_secret", mode="after")
+    @field_validator('jwt_secret')
     @classmethod
-    def validate_jwt_secret_strength_in_production(cls, v: str, info) -> str:
-        """Enforce strong JWT secrets in production and staging.
-        
-        SECURITY-REVIEW: Weak secrets (dev-*) are rejected in non-development.
-        This prevents accidental use of development secrets in production.
-        """
-        environment = info.data.get("environment", "development")
-        if environment in ("staging", "production"):
-            if v.startswith("dev-") or len(v) < 32:
+    def validate_jwt_secret(cls, v: str, info) -> str:
+        """Ensure jwt_secret is strong in production."""
+        data = info.data
+        if data.get('environment') == 'production':
+            if v.startswith('dev-') or len(v) < 32:
                 raise ValueError(
-                    f"jwt_secret must be strong in {environment}. "
-                    f"Weak defaults (dev-*) and short keys (<32 chars) are rejected. "
-                    f"Generate with: openssl rand -hex 32"
+                    "jwt_secret must be 32+ characters and NOT start with 'dev-' in production. "
+                    "Use a cryptographically strong random key."
                 )
         return v
 
-    @field_validator("allowed_origins", mode="before")
+    @field_validator('database_url')
     @classmethod
-    def parse_allowed_origins(cls, v) -> list[str]:
-        """Parse comma-separated origins string into list."""
-        if isinstance(v, str):
-            return [origin.strip() for origin in v.split(",")]
+    def validate_database_url(cls, v: Optional[str], info) -> Optional[str]:
+        """Ensure database_url is provided in production."""
+        data = info.data
+        if data.get('environment') == 'production' and not v:
+            raise ValueError(
+                "database_url must be set explicitly in production. "
+                "No default is provided. Set via DATABASE_URL environment variable."
+            )
         return v
 
-    @field_validator("allowed_origins", mode="after")
+    @field_validator('allowed_origins')
     @classmethod
-    def validate_allowed_origins_no_wildcard_in_production(cls, v: list[str], info) -> list[str]:
-        """Prevent wildcard CORS origins in production for security.
-        
-        SECURITY-REVIEW: Wildcard origins allow any domain to access the API.
-        Only explicitly list trusted origins in production.
-        """
-        environment = info.data.get("environment", "development")
-        if environment == "production":
-            for origin in v:
-                if "*" in origin:
-                    raise ValueError(
-                        f"allowed_origins cannot contain wildcards (*) in production. "
-                        f"Explicitly list trusted origins only. Got: {v}"
-                    )
+    def validate_allowed_origins(cls, v: list[str], info) -> list[str]:
+        """Ensure allowed_origins does not use wildcard in production."""
+        data = info.data
+        if data.get('environment') == 'production':
+            if '*' in v:
+                raise ValueError(
+                    "allowed_origins must NOT contain '*' (wildcard) in production. "
+                    "Specify explicit origins only (e.g., ['https://example.com'])"
+                )
         return v
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Get application settings (singleton pattern).
+    """Get application settings singleton.
     
-    Loads and validates configuration from .env on first call.
-    Subsequent calls return cached instance for performance.
+    Uses lru_cache to ensure settings are instantiated once and reused throughout
+    the application lifecycle. Avoids repeated validation overhead and ensures
+    configuration consistency.
     
+    This function is called at app startup in lifespan context manager to fail
+    fast with clear error messages if configuration is invalid or missing required
+    secrets (especially in production).
+    
+    For testing: call get_settings.cache_clear() in test fixtures to reset state
+    between tests. See conftest.py for example fixture pattern.
+    
+    Returns:
+        Settings: Validated application configuration from environment.
+        
     Raises:
-        ValidationError: If configuration is invalid or required values are missing.
-        This error is logged immediately with full context for debugging.
-    
-    Test Usage:
-        Call get_settings.cache_clear() in pytest fixtures to reset singleton state
-        between tests, allowing each test to have isolated configuration.
-    
-    Startup Usage:
-        Call get_settings() eagerly in app lifespan context manager to fail fast
-        with clear error messages if configuration is invalid. Never delay validation
-        to the first request (that causes user-facing errors).
+        ValidationError: If any setting validation fails (database_url missing,
+                        weak secrets in production, invalid enum values, etc.).
+                        This is NOT suppressed — callers must handle explicitly
+                        at app startup to surface configuration errors immediately.
     """
     try:
         settings = Settings()
-        logger.info(
-            f"Configuration loaded: environment={settings.environment}, "
-            f"debug={settings.debug}, database_url={'***' if settings.database_url else 'NOT SET'}"
-        )
+        logger.info(f"✓ Settings loaded: environment={settings.environment}, debug={settings.debug}")
         return settings
     except ValidationError as e:
-        logger.error(
-            f"Configuration validation failed at startup. "
-            f"Please check your .env file and environment variables. "
-            f"Errors:\n{e}",
-            exc_info=True
-        )
+        # Log validation errors with full context; caller must handle
+        logger.error(f"✗ Settings validation failed: {e}")
         raise
 ---
