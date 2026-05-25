@@ -197,4 +197,3 @@ def _fallback_triage(message_body: str) -> TriageResult:
         confidence=0.95 if has_emergency else 0.3,
         tags=["fallback", "ai_unavailable"]
     )
----
