@@ -1,6 +1,7 @@
 """Application configuration from environment variables."""
 from functools import lru_cache
 from typing import Optional
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -34,8 +35,29 @@ class Settings(BaseSettings):
     # App
     environment: str = "development"
     log_level: str = "INFO"
-    secret_key: str = ""  # REQUIRED: set SECRET_KEY in environment
+    secret_key: str = ""
     cors_origins: list[str] = ["http://localhost:3000"]
+
+    @field_validator("secret_key", mode="after")
+    @classmethod
+    def validate_secret_key(cls, v: str, info) -> str:
+        """
+        SECURITY-REVIEW: Enforce non-empty secret_key in production.
+        Empty secret_key renders session/JWT security ineffective.
+        """
+        environment = info.data.get("environment", "development")
+        if environment == "production" and not v:
+            raise ValueError(
+                "secret_key must be set via SECRET_KEY environment variable in production"
+            )
+        if environment == "development" and not v:
+            import logging
+            logging.getLogger(__name__).warning(
+                "⚠️ CRITICAL: secret_key is empty in development. "
+                "Set SECRET_KEY in .env for security testing. "
+                "Production deployment will fail without this."
+            )
+        return v
 
     @property
     def is_production(self) -> bool:
@@ -48,3 +70,4 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
+---
