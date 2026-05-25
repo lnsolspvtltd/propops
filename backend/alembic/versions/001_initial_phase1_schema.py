@@ -7,16 +7,20 @@ constraints, indexes, and downgrade logic.
 The migration is idempotent for upgrade (uses CREATE TABLE IF NOT EXISTS)
 but downgrade() fully reverses it with proper foreign key dependency order.
 
-Revision ID: 001
+Revision ID: a1b2c3d4e5f6
 Revises: None
 Create Date: 2025-01-01 00:00:00.000000
 """
+import logging
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import ProgrammingError, OperationalError
+
+logger = logging.getLogger(__name__)
 
 # revision identifiers
-revision = '001'
+revision = 'a1b2c3d4e5f6'
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -36,18 +40,34 @@ def upgrade() -> None:
     SECURITY-REVIEW: pgcrypto requires superuser in some managed DBs (RDS, etc).
     This migration falls back to uuid-ossp if pgcrypto is unavailable.
     For Supabase: pgcrypto is pre-installed; no action needed.
+    Raises ProgrammingError if both extensions fail — operator must intervene.
     """
     
     # ── Create UUID generation extension ──────────────────────────────────────
     # Try pgcrypto first (standard); fall back to uuid-ossp if superuser not available
+    pgcrypto_available = False
     try:
         op.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"')
-    except Exception as e:
-        # pgcrypto failed (likely insufficient permissions in managed DB)
-        # Fall back to uuid-ossp (more widely available in managed databases)
-        op.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"')
-        # Change server_default to use uuid_generate_v4() instead of gen_random_uuid()
-        # This will be handled by app-level UUID generation if extension fails at migration time
+        pgcrypto_available = True
+        logger.info("Successfully created pgcrypto extension")
+    except (ProgrammingError, OperationalError) as e:
+        logger.warning(
+            f"pgcrypto extension creation failed (likely insufficient permissions in managed DB): {e}. "
+            f"Attempting fallback to uuid-ossp."
+        )
+        try:
+            op.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"')
+            logger.info("Successfully created uuid-ossp extension as fallback")
+        except (ProgrammingError, OperationalError) as e2:
+            logger.error(
+                f"Both pgcrypto and uuid-ossp extension creation failed. "
+                f"UUID generation will not work. Error: {e2}. "
+                f"Action required: Manually create extension or grant superuser privileges."
+            )
+            raise ProgrammingError(
+                f"Failed to create UUID generation extension. Neither pgcrypto nor uuid-ossp available. "
+                f"Last error: {e2}"
+            ) from e2
     
     # ── organizations ────────────────────────────────────────────────────────
     # Root table: PM companies subscribing to PropOps
@@ -55,7 +75,7 @@ def upgrade() -> None:
         'organizations',
         sa.Column('id', postgresql.UUID(as_uuid=True), server_default=sa.func.gen_random_uuid(), nullable=False),
         sa.Column('name', sa.String(255), nullable=False),
-        sa.Column('email_domain', sa.String(255), nullable=True, index=False),
+        sa.Column('email_domain', sa.String(255), nullable=True),
         sa.Column('plan', sa.String(50), server_default='beta', nullable=False),
         sa.Column('unit_count', sa.Integer(), server_default=sa.text('0'), nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
@@ -64,7 +84,6 @@ def upgrade() -> None:
         sa.CheckConstraint("plan IN ('beta', 'starter', 'pro')", name='ck_organizations_plan'),
         sa.PrimaryKeyConstraint('id'),
     )
-    # Indexes for common filters
     op.create_index(
         'idx_organizations_deleted',
         'organizations',
@@ -88,7 +107,7 @@ def upgrade() -> None:
         sa.Column('address', sa.Text(), nullable=True),
         sa.Column('city', sa.String(100), nullable=True),
         sa.Column('province', sa.String(50), nullable=True),
-        sa.Column('postal_code', sa.String(20), nullable=True),
+        sa.Column('postal_code', sa.String(10), nullable=True),
         sa.Column('unit_count', sa.Integer(), server_default=sa.text('0'), nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
@@ -96,12 +115,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(['org_id'], ['organizations.id'], ondelete='RESTRICT'),
         sa.PrimaryKeyConstraint('id'),
     )
-    op.create_index(
-        'idx_properties_org',
-        'properties',
-        ['org_id'],
-        postgresql_where=sa.text("deleted_at IS NULL")
-    )
+    op.create_index('idx_properties_org_id', 'properties', ['org_id'])
     op.create_index(
         'idx_properties_deleted',
         'properties',
@@ -110,7 +124,7 @@ def upgrade() -> None:
     )
     
     # ── units ────────────────────────────────────────────────────────────────
-    # Units (apartments, suites) within properties
+    # Units (apartments/suites) within properties
     op.create_table(
         'units',
         sa.Column('id', postgresql.UUID(as_uuid=True), server_default=sa.func.gen_random_uuid(), nullable=False),
@@ -118,61 +132,71 @@ def upgrade() -> None:
         sa.Column('org_id', postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column('unit_number', sa.String(50), nullable=False),
         sa.Column('floor', sa.Integer(), nullable=True),
-        sa.Column('status', sa.String(50), server_default='active', nullable=False),
+        sa.Column('bedrooms', sa.Integer(), nullable=True),
+        sa.Column('bathrooms', sa.Numeric(3, 1), nullable=True),
+        sa.Column('square_feet', sa.Integer(), nullable=True),
+        sa.Column('tenant_name', sa.String(255), nullable=True),
+        sa.Column('tenant_phone', sa.String(20), nullable=True),
+        sa.Column('tenant_email', sa.String(255), nullable=True),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column('deleted_at', sa.DateTime(timezone=True), nullable=True),
-        sa.CheckConstraint("status IN ('active', 'vacant', 'maintenance')", name='ck_units_status'),
         sa.ForeignKeyConstraint(['property_id'], ['properties.id'], ondelete='CASCADE'),
         sa.ForeignKeyConstraint(['org_id'], ['organizations.id'], ondelete='RESTRICT'),
         sa.PrimaryKeyConstraint('id'),
-        sa.UniqueConstraint('property_id', 'unit_number', 'deleted_at', name='uq_units_property_number'),
     )
+    op.create_index('idx_units_property_id', 'units', ['property_id'])
+    op.create_index('idx_units_org_id', 'units', ['org_id'])
     op.create_index(
-        'idx_units_property',
+        'idx_units_unit_number',
         'units',
-        ['property_id'],
+        ['property_id', 'unit_number'],
+        unique=True,
         postgresql_where=sa.text("deleted_at IS NULL")
     )
     op.create_index(
-        'idx_units_org',
+        'idx_units_deleted',
         'units',
-        ['org_id'],
-        postgresql_where=sa.text("deleted_at IS NULL")
+        ['deleted_at'],
+        postgresql_where=sa.text("deleted_at IS NOT NULL")
     )
     
     # ── incidents ────────────────────────────────────────────────────────────
-    # Incidents (maintenance requests, emergency events) for units/properties
+    # Incident reports (issues/problems at properties/units)
     op.create_table(
         'incidents',
         sa.Column('id', postgresql.UUID(as_uuid=True), server_default=sa.func.gen_random_uuid(), nullable=False),
         sa.Column('org_id', postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column('property_id', postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column('unit_id', postgresql.UUID(as_uuid=True), nullable=True),
-        sa.Column('title', sa.String(500), nullable=False),
+        sa.Column('title', sa.String(255), nullable=False),
         sa.Column('description', sa.Text(), nullable=True),
         sa.Column('status', sa.String(50), server_default='OPEN', nullable=False),
-        sa.Column('urgency', sa.String(50), server_default='MEDIUM', nullable=False),
+        sa.Column('priority', sa.String(50), server_default='MEDIUM', nullable=False),
         sa.Column('category', sa.String(100), nullable=True),
-        sa.Column('assigned_to', postgresql.UUID(as_uuid=True), nullable=True),
+        sa.Column('reported_by', sa.String(255), nullable=True),
+        sa.Column('reported_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('triage_notes', sa.Text(), nullable=True),
         sa.Column('metadata', postgresql.JSONB(), server_default=sa.text("'{}'::jsonb"), nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column('resolved_at', sa.DateTime(timezone=True), nullable=True),
         sa.Column('deleted_at', sa.DateTime(timezone=True), nullable=True),
         sa.CheckConstraint(
-            "status IN ('OPEN', 'ASSIGNED', 'IN_PROGRESS', 'PENDING_APPROVAL', 'RESOLVED', 'CLOSED')",
+            "status IN ('OPEN', 'PENDING_APPROVAL', 'IN_PROGRESS', 'RESOLVED', 'CLOSED')",
             name='ck_incidents_status'
         ),
         sa.CheckConstraint(
-            "urgency IN ('LOW', 'MEDIUM', 'HIGH', 'EMERGENCY')",
-            name='ck_incidents_urgency'
+            "priority IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')",
+            name='ck_incidents_priority'
         ),
-        sa.ForeignKeyConstraint(['org_id'], ['organizations.id'], ondelete='CASCADE'),
+        sa.ForeignKeyConstraint(['org_id'], ['organizations.id'], ondelete='RESTRICT'),
         sa.ForeignKeyConstraint(['property_id'], ['properties.id'], ondelete='SET NULL'),
         sa.ForeignKeyConstraint(['unit_id'], ['units.id'], ondelete='SET NULL'),
         sa.PrimaryKeyConstraint('id'),
     )
+    op.create_index('idx_incidents_org_id', 'incidents', ['org_id'])
+    op.create_index('idx_incidents_property_id', 'incidents', ['property_id'])
+    op.create_index('idx_incidents_unit_id', 'incidents', ['unit_id'])
     op.create_index(
         'idx_incidents_org_status',
         'incidents',
@@ -180,73 +204,32 @@ def upgrade() -> None:
         postgresql_where=sa.text("deleted_at IS NULL")
     )
     op.create_index(
-        'idx_incidents_property',
-        'incidents',
-        ['property_id'],
-        postgresql_where=sa.text("deleted_at IS NULL")
-    )
-    op.create_index(
-        'idx_incidents_unit',
-        'incidents',
-        ['unit_id'],
-        postgresql_where=sa.text("deleted_at IS NULL")
-    )
-    op.create_index(
-        'idx_incidents_assigned_to',
-        'incidents',
-        ['assigned_to'],
-        postgresql_where=sa.text("assigned_to IS NOT NULL AND deleted_at IS NULL")
-    )
-    op.create_index(
-        'idx_incidents_created',
+        'idx_incidents_created_at',
         'incidents',
         ['created_at'],
         postgresql_where=sa.text("deleted_at IS NULL")
     )
+    op.create_index(
+        'idx_incidents_deleted',
+        'incidents',
+        ['deleted_at'],
+        postgresql_where=sa.text("deleted_at IS NOT NULL")
+    )
+    
+    logger.info("Phase 1 schema upgrade completed successfully")
 
 
 def downgrade() -> None:
-    """Drop all Phase 1 tables in reverse dependency order.
+    """Downgrade: Remove all Phase 1 tables in dependency order.
     
-    Important: Foreign key constraints require careful drop order.
-    Incidents must be dropped before Units, which must be before Properties,
-    which must be before Organizations.
+    Order: incidents → units → properties → organizations
+    (reverse of creation order to respect foreign keys)
     """
-    
-    # Drop incidents first (has FKs to organizations, properties, units)
-    op.drop_index('idx_incidents_created', table_name='incidents')
-    op.drop_index('idx_incidents_assigned_to', table_name='incidents')
-    op.drop_index('idx_incidents_unit', table_name='incidents')
-    op.drop_index('idx_incidents_property', table_name='incidents')
-    op.drop_index('idx_incidents_org_status', table_name='incidents')
+    # Drop in reverse order of creation (foreign key dependencies)
     op.drop_table('incidents')
-    
-    # Drop units (has FKs to properties and organizations)
-    op.drop_index('idx_units_org', table_name='units')
-    op.drop_index('idx_units_property', table_name='units')
     op.drop_table('units')
-    
-    # Drop properties (has FK to organizations)
-    op.drop_index('idx_properties_deleted', table_name='properties')
-    op.drop_index('idx_properties_org', table_name='properties')
     op.drop_table('properties')
-    
-    # Drop organizations (no FK dependencies)
-    op.drop_index('idx_organizations_email_domain', table_name='organizations')
-    op.drop_index('idx_organizations_deleted', table_name='organizations')
     op.drop_table('organizations')
     
-    # Drop extensions (cleanup)
-    try:
-        op.execute('DROP EXTENSION IF EXISTS "pgcrypto"')
-    except Exception:
-        # pgcrypto may not exist if uuid-ossp was used instead
-        pass
-    
-    try:
-        op.execute('DROP EXTENSION IF EXISTS "uuid-ossp"')
-    except Exception:
-        pass
----
-
+    logger.info("Phase 1 schema downgrade completed successfully")
 ---
