@@ -1,7 +1,7 @@
 """Application configuration from environment variables."""
 from functools import lru_cache
 from typing import Optional
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -58,6 +58,16 @@ class Settings(BaseSettings):
                 "Production deployment will fail without this."
             )
         return v
+
+    @model_validator(mode='after')
+    def validate_production_secrets(self) -> 'Settings':
+        """Raise if required secrets are missing in production."""
+        if self.environment == 'production':
+            if not self.secret_key:
+                raise ValueError("SECRET_KEY must be set in production environment")
+            if not self.anthropic_api_key:
+                raise ValueError("ANTHROPIC_API_KEY must be set in production environment")
+        return self
 
     @property
     def is_production(self) -> bool:
