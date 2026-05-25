@@ -258,4 +258,3 @@ propops/
 **Questions?** Check logs: `docker-compose logs -f [service]`
 ---
 EOF
----
