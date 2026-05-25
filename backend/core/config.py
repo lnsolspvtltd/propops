@@ -7,6 +7,8 @@ All secrets must be provided explicitly — no hardcoded defaults in production.
 Singleton pattern via lru_cache ensures settings are instantiated once and reused,
 avoiding repeated validation overhead and ensuring consistent configuration throughout
 the application lifecycle.
+
+For testing, call get_settings.cache_clear() in test fixtures to reset singleton state.
 """
 import logging
 import sys
@@ -28,6 +30,15 @@ class Settings(BaseSettings):
     
     Instantiate via get_settings() to guarantee singleton behavior and proper
     error handling at application startup.
+    
+    Test Pattern:
+    ```python
+    @pytest.fixture(autouse=True)
+    def reset_settings():
+        get_settings.cache_clear()  # Reset singleton between tests
+        yield
+        get_settings.cache_clear()
+    ```
     """
 
     model_config = SettingsConfigDict(
@@ -56,7 +67,8 @@ class Settings(BaseSettings):
     # ── Database ─────────────────────────────────────────────────────────────
     database_url: Optional[str] = Field(
         default=None,
-        description="PostgreSQL async connection string (postgresql+asyncpg://user:password@host:port/db)"
+        description="PostgreSQL async connection string (postgresql+asyncpg://user:password@host:port/db). "
+                    "REQUIRED — must be set explicitly; no production default provided."
     )
     database_pool_size: int = Field(
         default=5,
@@ -143,76 +155,49 @@ class Settings(BaseSettings):
     @field_validator("debug", mode="after")
     @classmethod
     def validate_debug_mode(cls, v: bool, info) -> bool:
-        """SECURITY-REVIEW: Block debug mode in production and staging.
+        """SECURITY-REVIEW: Block debug mode in production.
         
-        Debug mode enables verbose error pages, stack traces, and may log sensitive data.
-        It must never be enabled in production or staging environments.
+        Debug mode enables detailed error pages, full stack traces, and verbose logging.
+        This is a critical security risk in production (information disclosure).
         """
-        environment = info.data.get("environment", "development")
-        if v is True and environment in ("staging", "production"):
+        environment = info.data.get("environment")
+        if v and environment == "production":
             raise ValueError(
-                f"debug=True is not allowed in {environment} environment. "
-                f"Debug mode exposes sensitive information. "
-                f"Set DEBUG=false or use development environment only."
+                "debug=True is not allowed in production environment. "
+                "Set DEBUG=false in .env or deployment platform."
             )
-        return v
-
-    @field_validator("database_url", mode="after")
-    @classmethod
-    def validate_database_url(cls, v: Optional[str], info) -> Optional[str]:
-        """SECURITY-REVIEW: Enforce database_url is required in production.
-        
-        In development, a missing database_url is allowed (tests may mock DB).
-        In production/staging, it's a critical error — application cannot start without DB.
-        """
-        environment = info.data.get("environment", "development")
-        
-        if v is None or v.strip() == "":
-            if environment == "production":
-                raise ValueError(
-                    "database_url is REQUIRED in production environment. "
-                    "Set DATABASE_URL in deployment platform (Railway, Heroku, Supabase, etc.). "
-                    "Never set DATABASE_URL to an empty string. Application cannot start."
-                )
-            elif environment == "staging":
-                logger.warning(
-                    "database_url is empty in staging environment. "
-                    "Staging typically requires a real database. "
-                    "Confirm this is intentional (e.g., running tests with mocked DB)."
-                )
-        else:
-            # Validate the connection string format
-            if not v.startswith("postgresql+asyncpg://"):
-                raise ValueError(
-                    f"database_url must use postgresql+asyncpg driver (async). "
-                    f"Got: {v[:50]}... "
-                    f"Expected format: postgresql+asyncpg://user:password@host:port/database"
-                )
-        
         return v
 
     @field_validator("secret_key", mode="after")
     @classmethod
     def validate_secret_key(cls, v: str, info) -> str:
-        """SECURITY-REVIEW: Enforce strong secret_key in production.
+        """SECURITY-REVIEW: Reject weak secrets in production.
         
-        Development allows weak defaults (dev-*) for local testing.
-        Production requires: min 32 chars, no 'dev-' prefix, cryptographically random.
+        In production, secret key must:
+        - Not start with 'dev-' (development marker)
+        - Be at least 32 characters (cryptographic strength)
+        - Not use common test values
+        
+        Development (default: dev-secret-key-local-testing-only) is permitted for local dev.
         """
-        environment = info.data.get("environment", "development")
+        environment = info.data.get("environment")
         
         if environment == "production":
-            if v.startswith("dev-") or v == "dev-secret-key-local-testing-only":
+            if v.startswith("dev-"):
                 raise ValueError(
-                    "secret_key in production must not use development default. "
-                    "Generate a strong key: openssl rand -hex 32 "
-                    "and set in deployment platform. "
-                    "Current key appears to be development-only."
+                    "secret_key must not start with 'dev-' in production. "
+                    "Generate a strong random key with: openssl rand -hex 32"
                 )
             if len(v) < 32:
                 raise ValueError(
-                    f"secret_key in production must be at least 32 characters. "
-                    f"Got {len(v)} chars. Generate: openssl rand -hex 32"
+                    "secret_key must be at least 32 characters in production. "
+                    "Generate with: openssl rand -hex 32"
+                )
+            if v == "dev-secret-key-local-testing-only":
+                raise ValueError(
+                    "secret_key uses default development value in production. "
+                    "This is a critical security error. "
+                    "Generate and set a unique strong key in your deployment platform."
                 )
         
         return v
@@ -220,51 +205,85 @@ class Settings(BaseSettings):
     @field_validator("jwt_secret", mode="after")
     @classmethod
     def validate_jwt_secret(cls, v: str, info) -> str:
-        """SECURITY-REVIEW: Enforce strong jwt_secret in production.
+        """SECURITY-REVIEW: Reject weak JWT secrets in production.
         
-        Same rules as secret_key: min 32 chars in production, no dev- prefix.
+        In production, JWT secret must:
+        - Not start with 'dev-' (development marker)
+        - Be at least 32 characters (cryptographic strength)
+        - Not use common test values
+        
+        Development (default: dev-jwt-secret-local-testing-only) is permitted for local dev.
         """
-        environment = info.data.get("environment", "development")
+        environment = info.data.get("environment")
         
         if environment == "production":
-            if v.startswith("dev-") or v == "dev-jwt-secret-local-testing-only":
+            if v.startswith("dev-"):
                 raise ValueError(
-                    "jwt_secret in production must not use development default. "
-                    "Generate a strong key: openssl rand -hex 32 "
-                    "and set in deployment platform. "
-                    "Current key appears to be development-only."
+                    "jwt_secret must not start with 'dev-' in production. "
+                    "Generate a strong random key with: openssl rand -hex 32"
                 )
             if len(v) < 32:
                 raise ValueError(
-                    f"jwt_secret in production must be at least 32 characters. "
-                    f"Got {len(v)} chars. Generate: openssl rand -hex 32"
+                    "jwt_secret must be at least 32 characters in production. "
+                    "Generate with: openssl rand -hex 32"
+                )
+            if v == "dev-jwt-secret-local-testing-only":
+                raise ValueError(
+                    "jwt_secret uses default development value in production. "
+                    "This is a critical security error. "
+                    "Generate and set a unique strong key in your deployment platform."
                 )
         
         return v
 
-    @field_validator("allowed_origins", mode="before")
+    @field_validator("database_url", mode="after")
     @classmethod
-    def parse_allowed_origins(cls, v) -> list[str]:
-        """Parse comma-separated CORS origins from string."""
-        if isinstance(v, str):
-            return [origin.strip() for origin in v.split(",") if origin.strip()]
+    def validate_database_url(cls, v: Optional[str], info) -> Optional[str]:
+        """SECURITY-REVIEW: Require explicit database URL in production.
+        
+        DATABASE_URL is critical and has no safe default:
+        - Empty string or None in production is caught here and raises ValueError
+        - Development allows None (in-memory test DBs)
+        - All URLs must use asyncpg driver (postgresql+asyncpg://)
+        
+        Fail fast with clear message if DATABASE_URL is not set in production.
+        """
+        environment = info.data.get("environment")
+        
+        if environment == "production" and not v:
+            raise ValueError(
+                "DATABASE_URL is required in production environment. "
+                "Set DATABASE_URL in your deployment platform (Railway, Heroku, etc). "
+                "Format: postgresql+asyncpg://user:password@host:port/database"
+            )
+        
+        if v and "postgresql+asyncpg" not in v:
+            raise ValueError(
+                f"DATABASE_URL must use asyncpg driver. "
+                f"Format: postgresql+asyncpg://user:password@host:port/database. "
+                f"Current: {v[:50]}..."
+            )
+        
         return v
 
     @field_validator("allowed_origins", mode="after")
     @classmethod
     def validate_allowed_origins(cls, v: list[str], info) -> list[str]:
-        """SECURITY-REVIEW: Block wildcard CORS in production.
+        """SECURITY-REVIEW: Block wildcard CORS origins in production.
         
-        Wildcard (*) allows any origin, opening the app to CSRF attacks.
-        Production must have explicit origin list.
+        Wildcard origins (*) in production allow any website to make cross-origin
+        requests on behalf of users (CSRF attack). This is a critical security risk.
+        
+        Production must use explicit origins list (app.example.com, etc).
+        Development allows localhost:* for ease of testing.
         """
-        environment = info.data.get("environment", "development")
+        environment = info.data.get("environment")
         
-        if "*" in v and environment in ("staging", "production"):
+        if environment == "production" and "*" in v:
             raise ValueError(
-                f"CORS wildcard origin (*) is not allowed in {environment} environment. "
-                f"Explicitly list allowed origins: ALLOWED_ORIGINS=https://app.example.com,https://dashboard.example.com "
-                f"to prevent CSRF attacks."
+                "Wildcard CORS origins (*) are not allowed in production. "
+                "Set explicit origins in ALLOWED_ORIGINS: "
+                "https://app.propops.com,https://dashboard.propops.com"
             )
         
         return v
@@ -272,42 +291,59 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Get or create singleton Settings instance.
+    """Singleton settings factory with LRU cache.
     
-    Uses functools.lru_cache to ensure Settings is instantiated exactly once,
-    with validation errors raised at application startup time.
+    Returns the same Settings instance on repeated calls to avoid:
+    - Repeated .env file reads
+    - Repeated validation overhead
+    - Inconsistent configuration mid-request
     
-    Returns:
-        Settings: Validated, immutable configuration object
-        
+    Thread-safe: lru_cache uses a lock internally.
+    
+    For testing, call get_settings.cache_clear() in test fixtures to reset:
+    ```python
+    @pytest.fixture(autouse=True)
+    def reset_settings():
+        get_settings.cache_clear()
+        yield
+        get_settings.cache_clear()
+    ```
+    
     Raises:
-        ValueError: If configuration validation fails (database_url missing in prod, etc.)
-        SystemExit: If settings cannot be created (calls sys.exit(1))
-        
-    Usage:
-        from backend.core.config import get_settings
-        
-        settings = get_settings()  # First call: instantiate, validate, cache
-        settings = get_settings()  # Subsequent calls: return cached instance (no re-validation)
-        
-        # In FastAPI dependency:
-        def get_config(settings: Settings = Depends(get_settings)) -> Settings:
-            return settings
+        ValidationError: If environment variables fail Pydantic validation
+                        (missing required fields, invalid types, etc).
     """
     try:
         settings = Settings()
         logger.info(
-            f"Configuration loaded successfully. "
-            f"Environment: {settings.environment}, "
-            f"Debug: {settings.debug}, "
-            f"API: {settings.api_host}:{settings.api_port}"
+            f"✓ Settings loaded successfully "
+            f"(environment={settings.environment}, debug={settings.debug})"
         )
         return settings
     except ValidationError as e:
-        logger.critical(
-            f"Configuration validation failed at startup. "
-            f"Application cannot continue. Errors:\n{e}"
+        logger.error(
+            f"✗ Settings validation failed. "
+            f"Check your .env file or environment variables. "
+            f"Errors: {e.error_count()} validation error(s)."
         )
-        sys.exit(1)
+        # Print detailed validation errors to stderr for deployment debugging
+        for error in e.errors():
+            logger.error(f"  {error['loc'][0]}: {error['msg']}")
+        raise
 
+
+if __name__ == "__main__":
+    # Quick validation check: python -m backend.core.config
+    try:
+        settings = get_settings()
+        print("✓ Settings valid")
+        print(f"  Environment: {settings.environment}")
+        print(f"  Debug: {settings.debug}")
+        print(f"  Database: {settings.database_url[:50] if settings.database_url else '(not set)'}...")
+        sys.exit(0)
+    except ValidationError as e:
+        print("✗ Settings validation failed")
+        for error in e.errors():
+            print(f"  {error['loc'][0]}: {error['msg']}")
+        sys.exit(1)
 ---
