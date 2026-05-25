@@ -138,4 +138,3 @@ export default function ApprovalQueue() {
                     <div className="flex-1 min-w-0">
                       <p className="font-medium text-white text-sm truncate">{draft.incident_title}</p>
                       <p className="text-gray-400 text-xs mt-1 truncate">{draft.recipient}</p>
-                    </div>
