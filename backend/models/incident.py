@@ -1,9 +1,9 @@
 """SQLAlchemy models for PropOps."""
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import Column, String, Text, Float, DateTime, ForeignKey, Integer, Index
 from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.orm import relationship, Mapped, mapped_column
+from sqlalchemy.orm import relationship
 from backend.core.database import Base
 
 
@@ -14,7 +14,7 @@ class Organization(Base):
     email_domain = Column(String(255))
     plan = Column(String(50), default="beta")
     unit_count = Column(Integer, default=0)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     properties = relationship("Property", back_populates="org", cascade="all, delete")
     incidents = relationship("Incident", back_populates="org")
 
@@ -58,8 +58,8 @@ class Incident(Base):
     source_channel = Column(String(50))
     source_address = Column(String(255))
     raw_message = Column(Text)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, index=True)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     resolved_at = Column(DateTime(timezone=True))
     org = relationship("Organization", back_populates="incidents")
     drafts = relationship("AIDraft", back_populates="incident", cascade="all, delete")
@@ -85,7 +85,7 @@ class AIDraft(Base):
     approved_by = Column(String(255))
     approved_at = Column(DateTime(timezone=True))
     sent_at = Column(DateTime(timezone=True))
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     incident = relationship("Incident", back_populates="drafts")
 
 
@@ -101,8 +101,5 @@ class CommunicationLog(Base):
     subject = Column(String(500))
     body = Column(Text)
     raw_headers = Column(JSONB, default={})
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
     incident = relationship("Incident", back_populates="comm_logs")
-```
-
----
