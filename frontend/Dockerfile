@@ -48,4 +48,3 @@ HEALTHCHECK --interval=10s --timeout=5s --retries=3 \
 
 # Default command
 CMD ["npm", "start"]
----
