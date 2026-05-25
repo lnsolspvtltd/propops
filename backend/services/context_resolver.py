@@ -203,4 +203,3 @@ async def resolve_context(
         f"({sender_name}) in org {org_id}"
     )
     return ContextResolution(confidence=0.0, match_type="none")
----
