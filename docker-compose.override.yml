@@ -1,0 +1,17 @@
+# Override file for local development (applied automatically by docker-compose)
+# This file is NOT committed to git; customize for your local machine
+
+version: "3.9"
+
+services:
+  backend:
+    # Additional dev overrides can go here
+    # Example: expose additional ports, mount additional volumes, etc.
+    environment:
+      LOG_LEVEL: DEBUG
+
+  frontend:
+    # Additional dev overrides
+    # Example: faster rebuild on file changes
+    pass_through: true
+---
