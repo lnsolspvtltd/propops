@@ -202,3 +202,23 @@ describe("ApprovalQueue", () => {
     render(<ApprovalQueue />);
 
     await waitFor(() => {
+      const draftItem = screen.getByText('Re: Broken Window - Unit 203');
+      expect(draftItem).toBeInTheDocument();
+    });
+
+    // Click on draft to open detail panel
+    fireEvent.click(screen.getByText('Re: Broken Window - Unit 203'));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /close/i })).toBeInTheDocument();
+    });
+
+    // Click X button to close
+    fireEvent.click(screen.getByRole('button', { name: /close/i }));
+
+    await waitFor(() => {
+      // Detail panel should be closed - X button no longer visible
+      expect(screen.queryByRole('button', { name: /close/i })).not.toBeInTheDocument();
+    });
+  });
+});
