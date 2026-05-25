@@ -5,7 +5,7 @@ Handles errors gracefully — marks draft as send_failed on SMTP error.
 Updates incident status to IN_PROGRESS on first outbound send.
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 import smtplib
 from email.mime.text import MIMEText
@@ -176,7 +176,7 @@ async def send_approved_draft(
     # Update draft status
     if success:
         draft.status = "sent"
-        draft.sent_at = datetime.utcnow()
+        draft.sent_at = datetime.now(timezone.utc)
         logger.info(f"email_sender: draft {draft_id} marked as sent")
     else:
         draft.status = "send_failed"
@@ -193,14 +193,14 @@ async def send_approved_draft(
         recipient=draft.recipient_email,
         subject=draft.subject,
         body=draft.body,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
     db.add(comm_log)
     
     # Update incident status to IN_PROGRESS on first outbound send
     if success and incident.status in ["OPEN", "PENDING_APPROVAL"]:
         incident.status = "IN_PROGRESS"
-        incident.updated_at = datetime.utcnow()
+        incident.updated_at = datetime.now(timezone.utc)
         logger.info(f"email_sender: incident {incident.id} status updated to IN_PROGRESS")
     
     await db.commit()
@@ -211,4 +211,3 @@ async def send_approved_draft(
         "status": draft.status,
         "error": error_msg
     }
-</end>
