@@ -7,4 +7,3 @@ declare namespace NodeJS {
     readonly NODE_ENV: "development" | "production" | "test";
   }
 }
----
