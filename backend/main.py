@@ -20,17 +20,38 @@ async def lifespan(app: FastAPI):
     
     Startup:
       - Initialize database
-      - Start inbox poller background task
+      - Start inbox poller background task (graceful degradation if fails)
       
     Shutdown:
       - Stop inbox poller gracefully
     """
     logger.info("PropOps starting up...")
-    await init_db()
-    await start_inbox_poller()
+    
+    try:
+        await init_db()
+        logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e}", exc_info=True)
+        raise  # Block startup if DB init fails
+    
+    try:
+        await start_inbox_poller()
+        logger.info("Inbox poller started")
+    except Exception as e:
+        # Log but do NOT block startup — graceful degradation
+        logger.warning(
+            f"Failed to start inbox poller: {e}. "
+            f"Application will continue but automated email ingestion is disabled.",
+            exc_info=True,
+        )
+    
     yield
+    
     logger.info("PropOps shutting down...")
-    await stop_inbox_poller()
+    try:
+        await stop_inbox_poller()
+    except Exception as e:
+        logger.warning(f"Error stopping inbox poller: {e}", exc_info=True)
 
 
 app = FastAPI(
@@ -58,3 +79,4 @@ app.include_router(approvals.router, prefix="/api/v1/approvals", tags=["approval
 async def root():
     """Root endpoint."""
     return {"service": "PropOps API", "version": "0.1.0", "status": "running"}
+---
