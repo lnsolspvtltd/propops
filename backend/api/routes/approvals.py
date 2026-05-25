@@ -42,7 +42,11 @@ async def list_pending_approvals(db: AsyncSession = Depends(get_db)):
 @router.post("/{draft_id}/approve")
 async def approve_draft(draft_id: str, req: ApproveRequest, db: AsyncSession = Depends(get_db)):
     """Approve a draft — marks it ready to send."""
-    result = await db.execute(select(AIDraft).where(AIDraft.id == uuid.UUID(draft_id)))
+    try:
+        draft_uuid = uuid.UUID(draft_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid draft_id format")
+    result = await db.execute(select(AIDraft).where(AIDraft.id == draft_uuid))
     draft = result.scalar_one_or_none()
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
@@ -56,10 +60,19 @@ async def approve_draft(draft_id: str, req: ApproveRequest, db: AsyncSession = D
 @router.post("/{draft_id}/reject")
 async def reject_draft(draft_id: str, req: RejectRequest, db: AsyncSession = Depends(get_db)):
     """Reject a draft."""
-    result = await db.execute(select(AIDraft).where(AIDraft.id == uuid.UUID(draft_id)))
+    try:
+        draft_uuid = uuid.UUID(draft_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid draft_id format")
+    result = await db.execute(select(AIDraft).where(AIDraft.id == draft_uuid))
     draft = result.scalar_one_or_none()
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
     draft.status = "rejected"
+    # Persist rejection metadata if model supports it
+    if hasattr(draft, "rejection_reason"):
+        draft.rejection_reason = req.reason
+    if hasattr(draft, "rejected_at"):
+        draft.rejected_at = datetime.now(timezone.utc)
     await db.commit()
-    return {"status": "rejected", "draft_id": draft_id}
+    return {"status": "rejected", "draft_id": draft_id, "reason": req.reason}
