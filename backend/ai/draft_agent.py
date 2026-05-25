@@ -238,4 +238,3 @@ Generate a professional draft response following the safety rules above. Output 
             success=False,
             error="Internal error generating draft — see logs"
         )
----
