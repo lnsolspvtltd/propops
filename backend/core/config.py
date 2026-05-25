@@ -403,4 +403,3 @@ def get_settings() -> Settings:
     except Exception as e:
         logger.critical(f"Unexpected error loading settings: {e}", exc_info=True)
         raise
----
