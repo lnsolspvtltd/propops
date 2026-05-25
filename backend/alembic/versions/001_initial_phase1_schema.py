@@ -32,7 +32,7 @@ def upgrade() -> None:
         sa.Column('name', sa.String(255), nullable=False),
         sa.Column('email_domain', sa.String(255), nullable=True),
         sa.Column('plan', sa.String(50), server_default='beta', nullable=False),
-        sa.Column('unit_count', sa.Integer(), server_default='0', nullable=False),
+        sa.Column('unit_count', sa.Integer(), server_default=sa.text('0'), nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column('deleted_at', sa.DateTime(timezone=True), nullable=True),
@@ -52,7 +52,7 @@ def upgrade() -> None:
         sa.Column('city', sa.String(100), nullable=True),
         sa.Column('province', sa.String(50), nullable=True),
         sa.Column('postal_code', sa.String(20), nullable=True),
-        sa.Column('unit_count', sa.Integer(), server_default='0', nullable=False),
+        sa.Column('unit_count', sa.Integer(), server_default=sa.text('0'), nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column('deleted_at', sa.DateTime(timezone=True), nullable=True),
@@ -83,18 +83,29 @@ def upgrade() -> None:
     op.create_index('idx_units_tenant_email', 'units', ['tenant_email'])
     op.create_index('idx_units_deleted', 'units', ['deleted_at'])
     
-    # ── incidents ────────────────────────────────────────────────────────────
+    # ── incidents ───────────────────────────────────────────────────────────
     op.create_table(
         'incidents',
         sa.Column('id', postgresql.UUID(as_uuid=True), server_default=sa.func.gen_random_uuid(), nullable=False),
         sa.Column('org_id', postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column('property_id', postgresql.UUID(as_uuid=True), nullable=True),
-        sa.Column('unit_id', postgresql.UUID(as_uuid=True), nullable=True),
-        sa.Column('thread_id', postgresql.UUID(as_uuid=True), server_default=sa.func.gen_random_uuid(), nullable=False),
+        sa.Column('property_id', postgresql.UUID, nullable=True),
+        sa.Column('unit_id', postgresql.UUID, nullable=True),
+        sa.Column('thread_id', postgresql.UUID, server_default=sa.func.gen_random_uuid(), nullable=False),
         sa.Column('title', sa.String(500), nullable=False),
-        sa.Column('category', sa.String(100), nullable=True),
-        sa.Column('urgency', sa.String(50), server_default='MEDIUM', nullable=False),
-        sa.Column('status', sa.String(50), server_default='OPEN', nullable=False),
+        sa.Column('category', sa.String(100), nullable=True,
+                    check_constraint="category IS NULL OR category IN ('maintenance', 'billing', 'noise', 'lease', 'move_in', 'move_out', 'general')"),
+        sa.Column('urgency', sa.String(50), server_default='MEDIUM',
+                    check_constraint="urgency IN ('EMERGENCY', 'HIGH', 'MEDIUM', 'LOW')"),
+        sa.Column('status', sa.String(50), server_default='OPEN',
+                    check_constraint="status IN ('OPEN', 'PENDING_APPROVAL', 'DISPATCH_READY', 'DISPATCHED', 'IN_PROGRESS', 'RESOLVED', 'CLOSED')"),
         sa.Column('ai_summary', sa.Text(), nullable=True),
-        sa.Column('ai_confidence', sa.Float(), nullable=True),
-        sa.Column('source_channel', sa.String(50),
+        sa.ForeignKeyConstraint(['org_id'], ['organizations.id'], ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['property_id'], ['properties.id'], ondelete='SET NULL'),
+        sa.ForeignKeyConstraint(['unit_id'], ['units.id'], ondelete='SET NULL'),
+        sa.PrimaryKeyConstraint('id'),
+    )
+    op.create_index('idx_incidents_org', 'incidents', ['org_id'])
+    op.create_index('idx_incidents_property', 'incidents', ['property_id'])
+    op.create_index('idx_incidents_unit', 'incidents', ['unit_id'])
+    op.create_index('idx_incidents_thread', 'incidents', ['thread_id'])
+    op.create_index('idx_incidents_status', 'incidents', ['status'])
