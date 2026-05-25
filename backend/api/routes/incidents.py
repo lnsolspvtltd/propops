@@ -82,12 +82,3 @@ async def get_incident(incident_id: str, db: AsyncSession = Depends(get_db)):
         "category": inc.category,
         "urgency": inc.urgency,
         "status": inc.status,
-        "summary": inc.ai_summary,
-        "confidence": inc.ai_confidence,
-        "source": inc.source_address,
-        "unit_id": str(inc.unit_id) if inc.unit_id else None,
-        "property_id": str(inc.property_id) if inc.property_id else None,
-        "raw_message": inc.raw_message,
-        "created_at": inc.created_at.isoformat() if inc.created_at else "",
-        "drafts": drafts,
-    }
