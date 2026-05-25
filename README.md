@@ -91,5 +91,4 @@ cd frontend && npm install && npm run dev
 
 ---
 *Built by ANVIL · Managed by NEXUS · Reviewed by FORGE · LN Sols Pvt Ltd*
-```
-</end>
+---
