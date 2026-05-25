@@ -229,4 +229,3 @@ async def reject_draft(
     except Exception as e:
         logger.error(f"Error rejecting draft {draft_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to reject draft")
----
