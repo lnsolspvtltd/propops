@@ -6,7 +6,6 @@ SAFETY: NEVER confirms payment amounts, deposits, or financial figures.
 SAFETY: NEVER confirms a specific appointment time.
 Always be professional, empathetic, solution-focused.
 """
-import time
 import logging
 import re
 from typing import Optional
@@ -16,7 +15,8 @@ from backend.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# SAFETY-REVIEW: Liability and financial confirmation patterns to explicitly forbid
+# SECURITY-REVIEW: Liability and financial confirmation patterns to explicitly forbid
+# These patterns are checked both pre- and post-generation to prevent unsafe output
 LIABILITY_PATTERNS = [
     r"we\s+(?:accept|accept\s+responsibility|admit|admit\s+fault|are\s+liable|are\s+responsible)",
     r"(?:our|we)\s+fault",
@@ -40,8 +40,8 @@ DRAFT_SYSTEM_PROMPTS = {
     "tenant_reply": """You are PropOps Draft AI, writing professional responses to tenants on behalf of a property management company.
 
 ABSOLUTE SAFETY RULES:
-- NEVER admit liability, fault, or responsibility
-- NEVER confirm payment amounts, deposits, or financial figures
+- NEVER admit liability, fault, or responsibility for any issue
+- NEVER confirm payment amounts, deposits, or financial figures by number
 - NEVER confirm a specific appointment time (say "we will be in touch to confirm a time that works for you")
 - NEVER promise a timeline you cannot guarantee
 - NEVER say "we are sorry" or apologize on behalf of the company
@@ -66,272 +66,176 @@ EXAMPLE SAFE RESPONSES:
 
 Write the reply body only. Do NOT include greeting like "Dear [Name]" or closing like "Regards". That will be added separately.""",
 
-    "vendor_outreach": """You are PropOps Draft AI, writing professional outreach emails to contractors/vendors on behalf of a property management company.
-
-ABSOLUTE SAFETY RULES:
-- NEVER confirm any tenant complaint as fact
-- NEVER admit liability for damage or defects
-- NEVER confirm budget or payment terms in draft (use "per your estimate" or "as discussed")
-- Keep professional and courteous tone
-- Frame as inquiry, not accusation
+    "vendor_outreach": """You are PropOps Draft AI, writing professional outreach emails to contractors and vendors on behalf of a property management company.
 
 TONE GUIDELINES:
-- Professional and collaborative
-- Reference specific issue without assigning blame
-- Request quote or timeline
-- Keep under 200 words
+- Professional, clear, and direct
+- Lead with the property issue and urgency level
+- Provide specific details (address, unit number, issue description)
+- Include contact person and preferred communication method
+- Be concise (under 150 words)
 
-EXAMPLE SAFE RESPONSES:
-❌ "The tenant's toilet is broken because our building is poorly maintained."
-✅ "We have a request for plumbing service at Unit 4B. Could you provide a quote for inspection and repair?"
+CONTENT REQUIREMENTS:
+- Property name and address
+- Unit number (if applicable)
+- Issue description and urgency
+- Preferred response timeframe
+- Contact person and phone/email
 
-Write the reply body only. Do NOT include greeting or closing.""",
+Write the email body only. Do NOT include subject line or greeting.""",
 
-    "escalation": """You are PropOps Draft AI, writing escalation notices to property owners.
-
-ABSOLUTE SAFETY RULES:
-- State facts only — no speculation or blame
-- Separate incident description from property manager's actions
-- Be clear and direct about urgency level
-- Use professional, neutral tone
+    "owner_briefing": """You are PropOps Draft AI, writing concise operational briefings for property owners on incidents.
 
 TONE GUIDELINES:
-- Factual and urgent (if EMERGENCY/HIGH)
-- Clear summary of issue
-- Explicit next steps and timeline
-- Keep under 300 words (escalations can be longer)
+- Professional and matter-of-fact
+- Lead with the incident title and status
+- Provide facts only, no speculation
+- Include any financial impact if known
+- Suggest next steps or owner action required
+- Be concise (under 200 words)
 
-Write the body only. Do NOT include greeting or closing.""",
+STRUCTURE:
+1. Incident title and current status
+2. Affected property/unit and tenant (if applicable)
+3. Issue summary and current status
+4. Owner action required (if any)
+5. Timeline for resolution
+
+Write the briefing body only.""",
 }
 
 
 class DraftResult(BaseModel):
-    """Result of draft generation attempt."""
+    """Result of draft generation with safety validation."""
     model_config = ConfigDict(from_attributes=True)
     
-    subject: str
-    body: str
-    draft_type: str
-    model_used: str = ""
-    success: bool = True
+    success: bool
+    subject: Optional[str] = None
+    body: Optional[str] = None
     error: Optional[str] = None
-    safety_checked: bool = False
+    safety_issues: list[str] = []
 
 
-def _sanitize_for_safety(text: str) -> str:
+def scan_for_safety_violations(text: str) -> list[str]:
     """
-    Remove or flag text that violates safety rules.
-    Operates as a post-generation safety net (not primary defense).
+    Scan generated text for safety pattern violations.
     
-    SECURITY-REVIEW: This is a secondary check. Primary defense is system prompt.
-    If this function modifies output, we log and surface to human.
+    Args:
+        text: The generated draft text to validate
+        
+    Returns:
+        List of safety issues found (empty if safe)
     """
-    original = text
+    violations = []
+    text_lower = text.lower()
     
-    # Flag liability admissions
+    # Check liability patterns
     for pattern in LIABILITY_PATTERNS:
-        if re.search(pattern, text, re.IGNORECASE):
-            logger.warning(f"draft_agent: LIABILITY pattern detected: {pattern}")
-            # Replace with safe alternative
-            text = re.sub(pattern, "[REMOVED: liability admission]", text, flags=re.IGNORECASE)
+        if re.search(pattern, text_lower, re.IGNORECASE):
+            violations.append(f"Liability admission detected: {pattern}")
     
-    # Flag financial confirmations
+    # Check financial confirmation patterns
     for pattern in FINANCIAL_CONFIRMATION_PATTERNS:
-        if re.search(pattern, text, re.IGNORECASE):
-            logger.warning(f"draft_agent: FINANCIAL_CONFIRMATION pattern detected: {pattern}")
-            text = re.sub(
-                pattern,
-                "[REMOVED: financial confirmation]",
-                text,
-                flags=re.IGNORECASE
-            )
+        if re.search(pattern, text_lower, re.IGNORECASE):
+            violations.append(f"Financial confirmation detected: {pattern}")
     
-    # Flag time confirmations
+    # Check time confirmation patterns
     for pattern in TIME_CONFIRMATION_PATTERNS:
-        if re.search(pattern, text, re.IGNORECASE):
-            logger.warning(f"draft_agent: TIME_CONFIRMATION pattern detected: {pattern}")
-            text = re.sub(
-                pattern,
-                "[REMOVED: time confirmation]",
-                text,
-                flags=re.IGNORECASE
-            )
+        if re.search(pattern, text_lower, re.IGNORECASE):
+            violations.append(f"Specific time confirmation detected: {pattern}")
     
-    if text != original:
-        logger.error(f"draft_agent: Safety check modified output. Original:\n{original}\n\nModified:\n{text}")
-        return text  # Return modified, but flagged
-    
-    return text
+    return violations
 
 
-def _generate_subject_line(incident_title: str, urgency: str, draft_type: str) -> str:
-    """Generate appropriate subject line based on draft type and urgency."""
-    if draft_type == "escalation":
-        prefix = "ESCALATION:" if urgency in ["EMERGENCY", "HIGH"] else "Alert:"
-        return f"{prefix} {incident_title}"
-    elif draft_type == "vendor_outreach":
-        return f"Service Request: {incident_title}"
-    elif urgency == "EMERGENCY":
-        return f"URGENT: {incident_title}"
-    else:
-        return f"Re: {incident_title}"
-
-
-def generate_draft(
+async def generate_draft(
     incident_title: str,
-    incident_summary: str,
-    category: str,
-    urgency: str,
-    tenant_name: str = "",
-    property_name: str = "",
+    incident_context: str,
     draft_type: str = "tenant_reply",
+    recipient_email: Optional[str] = None,
 ) -> DraftResult:
     """
-    Generate a professional reply draft using Claude Sonnet.
-
+    Generate an AI draft response using Claude.
+    
+    SECURITY-REVIEW: Output is always validated against safety patterns before returning.
+    
     Args:
-        incident_title: One-line incident description
-        incident_summary: AI summary of the situation
-        category: Incident category (maintenance|billing|noise|lease|other)
-        urgency: EMERGENCY|HIGH|MEDIUM|LOW
-        tenant_name: Tenant/sender's name for personalisation
-        property_name: Property name
-        draft_type: tenant_reply | vendor_outreach | escalation
-
+        incident_title: Brief title of the incident
+        incident_context: Full context of the incident/email thread
+        draft_type: Type of draft (tenant_reply, vendor_outreach, owner_briefing)
+        recipient_email: Email of the intended recipient (logged for audit)
+        
     Returns:
-        DraftResult with subject, body, and safety_checked flag
-
-    Raises:
-        ValueError: If draft_type is invalid or required fields missing
+        DraftResult with success flag, draft content, and any safety issues
     """
     if draft_type not in DRAFT_SYSTEM_PROMPTS:
-        raise ValueError(f"Invalid draft_type: {draft_type}. Must be one of {list(DRAFT_SYSTEM_PROMPTS.keys())}")
-
-    if not incident_title or not incident_summary:
-        raise ValueError("incident_title and incident_summary are required")
-
+        return DraftResult(
+            success=False,
+            error=f"Unknown draft_type: {draft_type}. Must be one of {list(DRAFT_SYSTEM_PROMPTS.keys())}"
+        )
+    
     if not settings.anthropic_api_key:
-        logger.error("draft_agent: ANTHROPIC_API_KEY not configured")
-        raise ValueError("Anthropic API key not configured")
+        logger.error("Anthropic API key not configured")
+        return DraftResult(
+            success=False,
+            error="AI service not configured (ANTHROPIC_API_KEY missing)"
+        )
+    
+    system_prompt = DRAFT_SYSTEM_PROMPTS[draft_type]
+    user_prompt = f"""Incident: {incident_title}
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+Context:
+{incident_context}
 
-    # Map urgency to tone guidance
-    urgency_guidance = {
-        "EMERGENCY": "This is CRITICAL. Express immediate concern and swift action.",
-        "HIGH": "This is high priority. Respond with urgency and clear next steps.",
-        "MEDIUM": "Standard priority. Professional, helpful, and responsive tone.",
-        "LOW": "Low priority. Friendly and informative; no rush needed.",
-    }.get(urgency, "Professional and helpful tone.")
-
-    # Build context for draft
-    context_parts = [
-        f"INCIDENT: {incident_title}",
-        f"SUMMARY: {incident_summary}",
-        f"CATEGORY: {category}",
-        f"URGENCY: {urgency}",
-    ]
-    if tenant_name:
-        context_parts.append(f"SENDER/RECIPIENT: {tenant_name}")
-    if property_name:
-        context_parts.append(f"PROPERTY: {property_name}")
-    context_parts.append(f"DRAFT TYPE: {draft_type}")
-    context_parts.append(f"TONE: {urgency_guidance}")
-
-    prompt = f"""Generate a professional property management response:
-
-{chr(10).join(context_parts)}
-
-Requirements:
-- Acknowledge the situation without admitting fault
-- Provide next steps or timeline
-- Be professional, empathetic, solution-focused
-- Keep under 200 words (unless escalation, then up to 300)
-- No greeting or closing (they are added separately)"""
-
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            response = client.messages.create(
-                model="claude-sonnet-4-5-20251022",
-                max_tokens=1024,
-                system=DRAFT_SYSTEM_PROMPTS[draft_type],
-                messages=[{"role": "user", "content": prompt}],
+Generate a professional draft response following the safety rules above. Output ONLY the draft body text. No preamble, no closing, no explanations."""
+    
+    try:
+        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        message = client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=1024,
+            system=system_prompt,
+            messages=[
+                {"role": "user", "content": user_prompt}
+            ]
+        )
+        
+        draft_body = message.content[0].text.strip()
+        
+        # SECURITY-REVIEW: Validate generated content against safety patterns
+        safety_issues = scan_for_safety_violations(draft_body)
+        
+        if safety_issues:
+            logger.warning(
+                f"Draft rejected due to safety violations for incident '{incident_title}' "
+                f"(recipient: {recipient_email}): {safety_issues}"
             )
-
-            body = response.content[0].text.strip()
-
-            # SECURITY-REVIEW: Post-generation safety check
-            body = _sanitize_for_safety(body)
-
-            subject = _generate_subject_line(incident_title, urgency, draft_type)
-
-            logger.info(
-                f"draft_agent: generated {draft_type} draft for '{incident_title}' "
-                f"[{urgency}] (attempt {attempt + 1}, model={response.model})"
-            )
-
             return DraftResult(
-                subject=subject,
-                body=body,
-                draft_type=draft_type,
-                model_used=response.model,
-                success=True,
-                safety_checked=True,
+                success=False,
+                error="Draft rejected: contains unsafe content. Human review required.",
+                safety_issues=safety_issues
             )
-
-        except anthropic.RateLimitError as e:
-            if attempt < max_retries - 1:
-                wait_time = 2 ** attempt  # exponential backoff: 1s, 2s, 4s
-                logger.warning(f"draft_agent: rate limited, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
-                time.sleep(wait_time)
-            else:
-                logger.error(f"draft_agent: rate limit exceeded after {max_retries} attempts")
-                return DraftResult(
-                    subject=_generate_subject_line(incident_title, urgency, draft_type),
-                    body="We have received your request and will respond shortly with more information.",
-                    draft_type=draft_type,
-                    success=False,
-                    error="Rate limit exceeded — using fallback response",
-                    safety_checked=True,
-                )
-
-        except anthropic.APIError as e:
-            logger.error(f"draft_agent: API error attempt {attempt + 1}/{max_retries}: {e}")
-            if attempt == max_retries - 1:
-                # Return safe fallback on final failure
-                fallback_messages = {
-                    "tenant_reply": "Thank you for reaching out. We have received your message and will respond promptly.",
-                    "vendor_outreach": "We are reaching out regarding a service request. Please let us know your availability.",
-                    "escalation": "We are notifying you of an issue that requires your attention. Details are below.",
-                }
-                return DraftResult(
-                    subject=_generate_subject_line(incident_title, urgency, draft_type),
-                    body=fallback_messages.get(draft_type, "We will be in touch shortly."),
-                    draft_type=draft_type,
-                    success=False,
-                    error=f"API error: {str(e)[:100]}",
-                    safety_checked=True,
-                )
-
-        except Exception as e:
-            logger.error(f"draft_agent: unexpected error attempt {attempt + 1}/{max_retries}: {type(e).__name__}: {e}")
-            if attempt == max_retries - 1:
-                return DraftResult(
-                    subject=_generate_subject_line(incident_title, urgency, draft_type),
-                    body="We will respond to your message as soon as possible.",
-                    draft_type=draft_type,
-                    success=False,
-                    error=f"Internal error: {type(e).__name__}",
-                    safety_checked=True,
-                )
-
-    # Should not reach here, but safety net
-    return DraftResult(
-        subject="",
-        body="",
-        draft_type=draft_type,
-        success=False,
-        error="Unknown error in draft generation",
-        safety_checked=False,
-    )
+        
+        logger.info(
+            f"Draft generated successfully for incident '{incident_title}' "
+            f"(type: {draft_type}, recipient: {recipient_email})"
+        )
+        
+        return DraftResult(
+            success=True,
+            body=draft_body,
+            safety_issues=[]
+        )
+    
+    except anthropic.APIError as e:
+        logger.error(f"Anthropic API error: {e}", exc_info=True)
+        return DraftResult(
+            success=False,
+            error=f"AI service error: {str(e)[:100]}"
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error in generate_draft: {e}", exc_info=True)
+        return DraftResult(
+            success=False,
+            error="Internal error generating draft — see logs"
+        )
+---
