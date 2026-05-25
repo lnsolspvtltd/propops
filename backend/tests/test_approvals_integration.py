@@ -3,7 +3,7 @@ import pytest
 from httpx import AsyncClient
 from unittest.mock import AsyncMock, patch, MagicMock
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -67,8 +67,7 @@ async def test_approve_endpoint_queues_send(
     # After approve, status should be "approved"
     sample_draft.status = "approved"
     sample_draft.approved_by = "founder"
-    sample_draft.approved_at = datetime.utcnow()
+    sample_draft.approved_at = datetime.now(timezone.utc)
     
     assert sample_draft.status == "approved"
     assert sample_draft.approved_by == "founder"
-</end>
