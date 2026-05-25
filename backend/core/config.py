@@ -69,12 +69,10 @@ class Settings(BaseSettings):
     # Development defaults are intentionally weak for local testing only.
     secret_key: str = Field(
         default="dev-secret-key-change-in-production",
-        min_length=32 if True else 1,  # Dynamic: 32 chars in prod, 1 in dev
         description="Application secret key (change in production)"
     )
     jwt_secret: str = Field(
         default="dev-jwt-secret-change-in-production",
-        min_length=32 if True else 1,  # Dynamic: 32 chars in prod, 1 in dev
         description="JWT signing secret (separate from SECRET_KEY)"
     )
     jwt_access_token_expiry: int = Field(
@@ -114,109 +112,177 @@ class Settings(BaseSettings):
 
     @field_validator("database_url", mode="after")
     @classmethod
-    def validate_database_url(cls, v: str, info) -> str:
-        """Ensure database URL is provided and uses async driver.
+    def validate_database_url(cls, value: str, info) -> str:
+        """Validate that database_url is non-empty in production.
         
-        In production, DATABASE_URL is required. Development allows empty string
-        for local SQLite fallback (if configured).
+        In development, empty DATABASE_URL is allowed (for local testing),
+        but in production it must be explicitly configured.
+        
+        Args:
+            value: The database URL from environment
+            info: ValidationInfo with context
+            
+        Returns:
+            Validated database URL
+            
+        Raises:
+            ValueError: If empty in production environment
         """
-        # Empty string is only allowed in development
-        if not v:
-            environment = info.data.get("environment", "development")
-            if environment == "production":
-                raise ValueError(
-                    "database_url is required in production. "
-                    "Set DATABASE_URL environment variable with format: "
-                    "postgresql+asyncpg://user:password@host:port/database"
-                )
-            # Development: empty is OK (allows fallback)
-            logger.warning("database_url not provided; development fallback may be used")
-            return v
-        
-        # If provided, validate async driver
-        if not v.startswith("postgresql+asyncpg://"):
+        environment = info.data.get("environment", "development")
+        if environment == "production" and not value:
             raise ValueError(
-                "database_url must use postgresql+asyncpg:// (async) driver. "
-                f"Got: {v[:50]}..."
+                "database_url must be explicitly configured in production. "
+                "Set DATABASE_URL environment variable with format: "
+                "postgresql+asyncpg://user:password@host:port/database"
             )
-        return v
+        if not value and environment != "production":
+            logger.warning(
+                "database_url is empty in %s environment. "
+                "Application will fail at runtime if database operations are attempted.",
+                environment
+            )
+        return value
 
-    @field_validator("allowed_origins", mode="after")
+    @field_validator("debug", mode="after")
     @classmethod
-    def validate_origins(cls, v: list[str], info) -> list[str]:
-        """Reject wildcard origins in production."""
-        if "*" in v:
-            environment = info.data.get("environment", "development")
-            if environment == "production":
-                raise ValueError(
-                    "Wildcard CORS origins (*) not allowed in production. "
-                    f"Provide explicit origins: {v}"
-                )
-            logger.warning("Wildcard CORS origin (*) used in non-production environment")
-        return v
+    def validate_debug_mode(cls, value: bool, info) -> bool:
+        """Validate that debug mode is disabled in production.
+        
+        Args:
+            value: The debug flag
+            info: ValidationInfo with context
+            
+        Returns:
+            Validated debug flag
+            
+        Raises:
+            ValueError: If debug=True in production
+        """
+        environment = info.data.get("environment", "development")
+        if value and environment == "production":
+            raise ValueError(
+                "debug=True is not allowed in production environment. "
+                "Set DEBUG=false in production configuration."
+            )
+        if value:
+            logger.warning(
+                "DEBUG mode enabled in %s environment. "
+                "This exposes sensitive information and should never be enabled in production.",
+                environment
+            )
+        return value
 
     @field_validator("secret_key", mode="after")
     @classmethod
-    def validate_secret_key(cls, v: str, info) -> str:
-        """Ensure secret key meets production standards."""
+    def validate_secret_key(cls, value: str, info) -> str:
+        """Validate secret key meets minimum security requirements.
+        
+        In production, requires 32+ characters.
+        In development, allows weak keys for testing.
+        
+        Args:
+            value: The secret key
+            info: ValidationInfo with context
+            
+        Returns:
+            Validated secret key
+            
+        Raises:
+            ValueError: If too short in production
+        """
         environment = info.data.get("environment", "development")
-        if environment == "production" and (not v or len(v) < 32):
+        if environment == "production" and len(value) < 32:
             raise ValueError(
                 "secret_key must be at least 32 characters in production. "
                 "Generate with: openssl rand -hex 32"
             )
-        if environment == "production" and v.startswith("dev-"):
-            logger.error("Production environment using development secret key (dev-*)")
-            raise ValueError("Production secret_key cannot start with 'dev-'")
-        return v
+        if environment == "production" and value.startswith("dev-"):
+            raise ValueError(
+                "secret_key in production must not use development defaults. "
+                "Generate a strong secret: openssl rand -hex 32"
+            )
+        return value
 
     @field_validator("jwt_secret", mode="after")
     @classmethod
-    def validate_jwt_secret(cls, v: str, info) -> str:
-        """Ensure JWT secret meets production standards."""
+    def validate_jwt_secret(cls, value: str, info) -> str:
+        """Validate JWT secret meets minimum security requirements.
+        
+        In production, requires 32+ characters and must not be a development default.
+        
+        Args:
+            value: The JWT secret
+            info: ValidationInfo with context
+            
+        Returns:
+            Validated JWT secret
+            
+        Raises:
+            ValueError: If too short or using development default in production
+        """
         environment = info.data.get("environment", "development")
-        if environment == "production" and (not v or len(v) < 32):
+        if environment == "production" and len(value) < 32:
             raise ValueError(
                 "jwt_secret must be at least 32 characters in production. "
                 "Generate with: openssl rand -hex 32"
             )
-        if environment == "production" and v.startswith("dev-"):
-            logger.error("Production environment using development JWT secret (dev-*)")
-            raise ValueError("Production jwt_secret cannot start with 'dev-'")
-        return v
+        if environment == "production" and value.startswith("dev-"):
+            raise ValueError(
+                "jwt_secret in production must not use development defaults. "
+                "Generate a strong secret: openssl rand -hex 32"
+            )
+        return value
+
+    @field_validator("allowed_origins", mode="after")
+    @classmethod
+    def validate_allowed_origins(cls, value: list[str], info) -> list[str]:
+        """Validate CORS origins are properly configured.
+        
+        In production, ensures wildcard origins are not used.
+        
+        Args:
+            value: List of allowed CORS origins
+            info: ValidationInfo with context
+            
+        Returns:
+            Validated list of origins
+            
+        Raises:
+            ValueError: If wildcards used in production
+        """
+        environment = info.data.get("environment", "development")
+        if environment == "production":
+            for origin in value:
+                if "*" in origin or origin == "*":
+                    raise ValueError(
+                        "Wildcard CORS origins (*) are not allowed in production. "
+                        "Specify explicit origins only: "
+                        "https://app.domain.com,https://dashboard.domain.com"
+                    )
+        return value
 
 
 def get_settings() -> Settings:
-    """Factory to get validated settings singleton.
+    """Load and validate settings from environment.
     
-    Raises ValidationError if any required var is missing or invalid.
+    Returns:
+        Settings: Validated configuration object
+        
+    Raises:
+        ValidationError: If any setting fails validation
     """
     try:
         settings = Settings()
-        
-        # Log startup config (never secrets)
         logger.info(
-            "Config loaded: environment=%s, api=%s:%s, db_pool=%s/%s, jwt_expiry_access=%ds",
-            settings.environment,
-            settings.api_host,
-            settings.api_port,
-            settings.database_pool_size,
-            settings.database_max_overflow,
-            settings.jwt_access_token_expiry,
+            f"Settings loaded successfully (environment={settings.environment}, "
+            f"debug={settings.debug}, deployment_id={settings.deployment_id})"
         )
-        
-        # Warn if using development defaults in production
-        if settings.environment == "production":
-            if settings.secret_key.startswith("dev-") or settings.jwt_secret.startswith("dev-"):
-                logger.critical("Production environment detected with development secrets!")
-                raise ValueError("Cannot start production with development secret defaults")
-        
         return settings
     except ValidationError as e:
-        logger.error(f"Configuration validation failed: {e}")
+        logger.error(f"Settings validation failed: {e}")
         raise
 
 
-# Singleton instance — loaded at module import
+# Global settings singleton (loaded once at startup)
 settings = get_settings()
 ---
