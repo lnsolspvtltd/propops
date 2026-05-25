@@ -2,7 +2,8 @@
 import uuid
 import logging
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
+from typing import Optional
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -68,7 +69,7 @@ async def list_pending_approvals(db: AsyncSession = Depends(get_db)):
         result = await db.execute(
             select(AIDraft, Incident)
             .join(Incident, AIDraft.incident_id == Incident.id)
-            .where(AIDraft.status == "pending")
+            .where(AIDraft.status == "PENDING_REVIEW")
         )
         rows = result.all()
         return [
@@ -77,9 +78,7 @@ async def list_pending_approvals(db: AsyncSession = Depends(get_db)):
                 "incident_id": str(d.incident_id),
                 "incident_title": inc.title,
                 "urgency": inc.urgency,
-                "subject": d.subject,
-                "body": d.body,
-                "recipient": d.recipient_email,
+                "draft_text": d.draft_text,
                 "created_at": d.created_at.isoformat() if d.created_at else "",
             }
             for d, inc in rows
@@ -93,7 +92,7 @@ async def list_pending_approvals(db: AsyncSession = Depends(get_db)):
 async def approve_draft(
     draft_id: str,
     req: ApproveRequest,
-    authorization: str = None,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -126,7 +125,7 @@ async def approve_draft(
         draft = result.scalar_one_or_none()
         
         if not draft:
-            logger.warning(f"Approval attempt on non-existent draft: {draft_id}")
+           logger.warning(f"Approval attempt on non-existent draft: {draft_id}")
             raise HTTPException(status_code=404, detail="Draft not found")
         
         draft.status = "approved"
@@ -161,7 +160,7 @@ async def approve_draft(
 async def reject_draft(
     draft_id: str,
     req: RejectRequest,
-    authorization: str = None,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     db: AsyncSession = Depends(get_db),
 ):
     """
