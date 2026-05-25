@@ -112,5 +112,3 @@ def get_valid_transitions(current_status: str) -> list[str]:
         return sorted([s.value for s in valid])
     except ValueError:
         return []
-</
->
