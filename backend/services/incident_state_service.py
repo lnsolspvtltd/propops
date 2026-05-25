@@ -212,5 +212,3 @@ async def get_incident_history(
         }
         for log in logs
     ]
-</
->
