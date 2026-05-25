@@ -259,4 +259,3 @@ def get_settings() -> Settings:
         # Log validation errors with full context; caller must handle
         logger.error(f"✗ Settings validation failed: {e}")
         raise
----
