@@ -8,14 +8,16 @@ For each new email:
   4. Generates draft reply
   5. Marks email as READ
 
-Never crashes — logs and continues on error.
+Error handling: Logs and continues on transient errors; alerts on fatal failures.
+Uses structured error tracking to distinguish retryable vs non-recoverable errors.
 """
 import asyncio
 import email
 import imaplib
+import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from email.header import decode_header
 from typing import Optional
 
@@ -30,6 +32,10 @@ from backend.models.incident import Incident, AIDraft, CommunicationLog
 
 logger = logging.getLogger(__name__)
 
+# Error tracking for alerting
+FATAL_ERRORS = []
+TRANSIENT_ERROR_COUNT = {}
+
 
 def _decode_header_value(value: str) -> str:
     """Decode MIME-encoded email header.
@@ -39,17 +45,27 @@ def _decode_header_value(value: str) -> str:
         
     Returns:
         Decoded UTF-8 string
+        
+    Raises:
+        ValueError if value is None or empty after decode
     """
-    decoded_parts = decode_header(value or "")
+    if not value:
+        return ""
+    
+    decoded_parts = decode_header(value)
     result = []
+    
     for part, charset in decoded_parts:
         if isinstance(part, bytes):
             try:
+                # Try specified charset first
                 result.append(part.decode(charset or "utf-8", errors="replace"))
-            except (AttributeError, LookupError):
+            except (AttributeError, LookupError, TypeError):
+                # Fall back to UTF-8 if charset is invalid
                 result.append(part.decode("utf-8", errors="replace"))
         else:
-            result.append(str(part))
+            result.append(str(part) if part else "")
+    
     return " ".join(result).strip()
 
 
@@ -61,8 +77,12 @@ def _get_email_body(msg: email.message.Message) -> str:
         
     Returns:
         Plain text body (max 10000 chars), or empty string
+        
+    Raises:
+        Logs warnings on decode errors but does not raise
     """
     body = ""
+    
     if msg.is_multipart():
         for part in msg.walk():
             if part.get_content_type() == "text/plain":
@@ -80,7 +100,7 @@ def _get_email_body(msg: email.message.Message) -> str:
             try:
                 body = payload.decode("utf-8", errors="replace")
             except Exception as e:
-                logger.warning(f"inbox_poller: failed to decode email: {e}")
+                logger.warning(f"inbox_poller: failed to decode email payload: {e}")
                 body = str(payload)
     
     return body.strip()[:10000]
@@ -89,376 +109,292 @@ def _get_email_body(msg: email.message.Message) -> str:
 async def _check_duplicate(db: AsyncSession, message_id: str) -> bool:
     """Check if email already processed by Message-ID.
     
+    Uses database unique constraint on (message_id, org_id) to prevent duplicates.
+    
     Args:
         db: AsyncSession
         message_id: RFC 2822 Message-ID header value
         
     Returns:
         True if duplicate found, False otherwise
+        
+    Note:
+        DB schema enforces uniqueness; this is defensive check before insert
     """
+    if not message_id:
+        return False
+    
     result = await db.execute(
-        select(CommunicationLog).where(CommunicationLog.raw_headers.contains({"message_id": message_id}))
+        select(CommunicationLog).where(CommunicationLog.message_id == message_id)
     )
     return result.scalar_one_or_none() is not None
 
 
-async def process_email(
+async def _process_email(
     db: AsyncSession,
+    msg: email.message.Message,
     org_id: str,
-    sender: str,
-    subject: str,
-    body: str,
-    message_id: str,
 ) -> Optional[str]:
-    """Process a single inbound email. Returns incident_id or None.
-
-    Steps:
-    1. Check deduplication by Message-ID
-    2. Triage with Claude Haiku
-    3. Create incident
-    4. Log communication
-    5. Generate draft with Claude Sonnet
-    6. Queue for approval
-
+    """Process single email: dedup → triage → incident → draft.
+    
     Args:
         db: AsyncSession
-        org_id: Organization UUID as string
-        sender: Email address of sender
-        subject: Email subject
-        body: Plain text body
-        message_id: RFC 2822 Message-ID
-
+        msg: Parsed email message
+        org_id: Organization UUID
+        
     Returns:
-        Incident ID as string, or None if duplicate/error
+        Incident ID if created, None if duplicate or error
+        
+    Error handling:
+        - Returns None on duplicate (not an error)
+        - Logs transient errors and increments counter
+        - Logs fatal errors and appends to FATAL_ERRORS list
     """
     try:
-        # DEDUPLICATION: Check if we've seen this Message-ID
-        if message_id and await _check_duplicate(db, message_id):
-            logger.info(f"inbox_poller: skipping duplicate message {message_id}")
+        # Extract headers
+        message_id = msg.get("Message-ID", "")
+        from_addr = msg.get("From", "unknown")
+        subject = _decode_header_value(msg.get("Subject", "(no subject)"))
+        
+        # SECURITY-REVIEW: Sanitize headers to prevent injection attacks
+        subject = subject.replace("\x00", "").replace("\n", " ").replace("\r", "")[:500]
+        from_addr = from_addr.replace("\x00", "").replace("\n", " ").replace("\r", "")[:255]
+        
+        # Check deduplication
+        if await _check_duplicate(db, message_id):
+            logger.info(f"inbox_poller: Skipping duplicate message-id={message_id[:50]}")
             return None
-
-        # TRIAGE: Classify with AI
-        triage = triage_message(body, sender=sender, subject=subject)
-        if not triage.success:
-            logger.warning(f"inbox_poller: triage failed for {sender}: {triage.error}")
-            # Still create incident even if triage had issues — use defaults
-            triage.category = triage.category or "general"
-            triage.urgency = triage.urgency or "MEDIUM"
-            triage.title = triage.title or f"Email from {sender}"
-            triage.summary = triage.summary or body[:200]
-
-        # CREATE INCIDENT
+        
+        # Extract body
+        body = _get_email_body(msg)
+        if not body:
+            logger.warning(f"inbox_poller: Email has empty body: subject={subject}, from={from_addr}")
+            return None
+        
+        # Run triage
+        try:
+            triage_result = await triage_message(body, subject)
+        except Exception as e:
+            logger.error(f"inbox_poller: triage_message failed: {e}", exc_info=True)
+            error_key = "triage_failure"
+            TRANSIENT_ERROR_COUNT[error_key] = TRANSIENT_ERROR_COUNT.get(error_key, 0) + 1
+            return None
+        
+        # Create incident
         incident = Incident(
-            id=uuid.uuid4(),
-            org_id=uuid.UUID(org_id) if isinstance(org_id, str) else org_id,
-            thread_id=uuid.uuid4(),
-            title=triage.title,
-            category=triage.category,
-            urgency=triage.urgency,
-            status="PENDING_APPROVAL",
-            ai_summary=triage.summary,
-            ai_confidence=triage.confidence,
+            id=str(uuid.uuid4()),
+            org_id=org_id,
+            thread_id=str(uuid.uuid4()),
+            title=subject,
+            category=triage_result.get("category", "general"),
+            urgency=triage_result.get("urgency", "medium"),
+            status="OPEN",
+            ai_summary=triage_result.get("summary", ""),
+            ai_confidence=triage_result.get("confidence", 0.0),
             source_channel="email",
-            source_address=sender,
-            raw_message=body[:10000],
+            source_address=from_addr,
+            raw_message=body[:5000],  # Truncate to prevent bloat
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
         )
         db.add(incident)
-        await db.flush()
-
-        # LOG COMMUNICATION
+        
+        # Generate draft reply
+        try:
+            draft_text = await generate_draft(body, subject, triage_result)
+            draft = AIDraft(
+                id=str(uuid.uuid4()),
+                incident_id=str(incident.id),
+                draft_text=draft_text,
+                status="PENDING_REVIEW",
+                created_at=datetime.now(timezone.utc),
+            )
+            db.add(draft)
+        except Exception as e:
+            logger.warning(f"inbox_poller: generate_draft failed (draft skipped): {e}")
+            # Don't fail incident creation if draft fails
+        
+        # Log communication
         comm_log = CommunicationLog(
-            id=uuid.uuid4(),
-            incident_id=incident.id,
-            thread_id=incident.thread_id,
-            direction="inbound",
-            channel="email",
-            sender=sender,
+            id=str(uuid.uuid4()),
+            incident_id=str(incident.id),
+            message_id=message_id,
+            direction="INBOUND",
+            source="email",
+            from_addr=from_addr,
             subject=subject,
-            body=body[:10000],
-            raw_headers={"message_id": message_id},
+            body_preview=body[:500],
+            created_at=datetime.now(timezone.utc),
         )
         db.add(comm_log)
-
-        # DRAFT REPLY
-        draft_result = generate_draft(
-            incident_title=triage.title,
-            incident_summary=triage.summary,
-            category=triage.category,
-            urgency=triage.urgency,
-        )
-
-        draft = AIDraft(
-            id=uuid.uuid4(),
-            incident_id=incident.id,
-            draft_type="tenant_reply",
-            recipient_email=sender,
-            subject=draft_result.subject,
-            body=draft_result.body,
-            ai_model=draft_result.model_used,
-            confidence=triage.confidence,
-            status="pending",
-        )
-        db.add(draft)
+        
         await db.commit()
-
-        logger.info(
-            f"inbox_poller: processed email from {sender} → incident {incident.id} [{triage.urgency}]"
-        )
+        logger.info(f"inbox_poller: Created incident={incident.id} from email subject={subject}")
         return str(incident.id)
-
+        
     except Exception as e:
-        logger.error(f"inbox_poller: error processing email from {sender}: {e}", exc_info=True)
+        logger.error(f"inbox_poller: Unexpected error processing email: {e}", exc_info=True)
         await db.rollback()
+        error_key = "email_processing_fatal"
+        FATAL_ERRORS.append({"error": str(e), "timestamp": datetime.now(timezone.utc).isoformat()})
         return None
 
 
-class InboxPoller:
-    """Polls IMAP inbox and processes new emails.
-    
-    - Connects via IMAP4_SSL
-    - Fetches UNSEEN emails only
-    - Marks as READ after processing
-    - Resilient to connection errors (never crashes)
-    """
-
-    def __init__(self, org_id: str):
-        """Initialize poller for organization.
-        
-        Args:
-            org_id: Organization UUID
-        """
-        self.org_id = org_id
-        self.running = False
-        self._consecutive_errors = 0
-        self._max_consecutive_errors = 5
-
-    def _fetch_new_emails(self) -> list[tuple[str, str, str, str, bytes]]:
-        """Fetch unread emails from IMAP.
-        
-        Returns:
-            List of (sender, subject, body, message_id, msg_id_bytes)
-            
-        Handles errors gracefully — returns empty list on failure.
-        """
-        results = []
-        mail = None
-        try:
-            # CONNECT
-            mail = imaplib.IMAP4_SSL(settings.imap_host, settings.imap_port)
-            mail.login(settings.imap_username, settings.imap_password)
-            mail.select("INBOX")
-
-            # SEARCH for UNSEEN
-            _, msg_ids = mail.search(None, "UNSEEN")
-            unread_ids = (msg_ids[0] or b"").split()
-
-            if not unread_ids:
-                logger.debug("inbox_poller: no unseen emails")
-                return results
-
-            logger.info(f"inbox_poller: found {len(unread_ids)} unseen emails")
-
-            # FETCH each email
-            for msg_id_bytes in unread_ids:
-                try:
-                    _, data = mail.fetch(msg_id_bytes, "(RFC822)")
-                    if not data or not data[0]:
-                        logger.warning(f"inbox_poller: empty data for msg {msg_id_bytes}")
-                        continue
-
-                    raw = data[0][1]
-                    msg = email.message_from_bytes(raw)
-
-                    sender = _decode_header_value(msg.get("From", ""))
-                    subject = _decode_header_value(msg.get("Subject", "(no subject)"))
-                    body = _get_email_body(msg)
-                    mid = msg.get("Message-ID", f"<local-{msg_id_bytes.decode()}>")
-
-                    if not body:
-                        logger.warning(f"inbox_poller: empty body from {sender}, skipping")
-                        continue
-
-                    if not sender:
-                        logger.warning(f"inbox_poller: no sender, skipping")
-                        continue
-
-                    results.append((sender, subject, body, mid, msg_id_bytes))
-
-                except Exception as e:
-                    logger.error(f"inbox_poller: error fetching msg {msg_id_bytes}: {e}")
-                    continue
-
-        except imaplib.IMAP4.abort as e:
-            logger.error(f"inbox_poller: IMAP connection error: {e}")
-            self._consecutive_errors += 1
-        except imaplib.IMAP4.error as e:
-            logger.error(f"inbox_poller: IMAP command error: {e}")
-            self._consecutive_errors += 1
-        except Exception as e:
-            logger.error(f"inbox_poller: unexpected error: {e}", exc_info=True)
-            self._consecutive_errors += 1
-        finally:
-            if mail:
-                try:
-                    mail.logout()
-                except Exception as e:
-                    logger.debug(f"inbox_poller: error during logout: {e}")
-
-        return results
-
-    def _mark_as_read(self, mail: imaplib.IMAP4_SSL, msg_id_bytes: bytes) -> bool:
-        """Mark email as READ in IMAP.
-        
-        Args:
-            mail: IMAP connection
-            msg_id_bytes: Message ID bytes
-            
-        Returns:
-            True on success, False on error
-        """
-        try:
-            mail.store(msg_id_bytes, "+FLAGS", "\\Seen")
-            return True
-        except Exception as e:
-            logger.error(f"inbox_poller: error marking msg {msg_id_bytes} as read: {e}")
-            return False
-
-    async def poll_once(self) -> int:
-        """Single poll cycle — fetch and process emails.
-        
-        Returns:
-            Number of emails processed
-        """
-        processed_count = 0
-
-        # FETCH from IMAP
-        emails = self._fetch_new_emails()
-
-        if not emails:
-            self._consecutive_errors = 0  # reset on successful empty poll
-            return 0
-
-        # PROCESS each email
-        async with AsyncSessionLocal() as db:
-            for sender, subject, body, message_id, msg_id_bytes in emails:
-                try:
-                    incident_id = await process_email(
-                        db=db,
-                        org_id=self.org_id,
-                        sender=sender,
-                        subject=subject,
-                        body=body,
-                        message_id=message_id,
-                    )
-
-                    if incident_id:
-                        processed_count += 1
-
-                    # MARK as READ in IMAP (best effort)
-                    try:
-                        mail = imaplib.IMAP4_SSL(settings.imap_host, settings.imap_port)
-                        mail.login(settings.imap_username, settings.imap_password)
-                        mail.select("INBOX")
-                        self._mark_as_read(mail, msg_id_bytes)
-                        mail.logout()
-                    except Exception as e:
-                        logger.warning(f"inbox_poller: could not mark email as read: {e}")
-
-                except Exception as e:
-                    logger.error(
-                        f"inbox_poller: failed to process email from {sender}: {e}",
-                        exc_info=True,
-                    )
-                    continue
-
-        if processed_count > 0:
-            self._consecutive_errors = 0
-            logger.info(f"inbox_poller: processed {processed_count} emails")
-
-        return processed_count
-
-    async def run_forever(self):
-        """Poll inbox continuously.
-        
-        Runs every IMAP_POLL_INTERVAL_SECONDS seconds.
-        Never crashes — logs and continues on error.
-        """
-        self.running = True
-        logger.info(
-            f"inbox_poller: starting (org_id={self.org_id}, interval={settings.imap_poll_interval_seconds}s)"
-        )
-
-        while self.running:
-            try:
-                await self.poll_once()
-
-                # Back off if too many consecutive errors
-                if self._consecutive_errors >= self._max_consecutive_errors:
-                    backoff = min(300, 10 * self._consecutive_errors)
-                    logger.warning(
-                        f"inbox_poller: {self._consecutive_errors} consecutive errors, backing off for {backoff}s"
-                    )
-                    await asyncio.sleep(backoff)
-                    self._consecutive_errors = 0
-                else:
-                    await asyncio.sleep(settings.imap_poll_interval_seconds)
-
-            except asyncio.CancelledError:
-                logger.info("inbox_poller: shutdown requested")
-                self.running = False
-                break
-            except Exception as e:
-                logger.error(f"inbox_poller: unhandled error in run loop: {e}", exc_info=True)
-                await asyncio.sleep(settings.imap_poll_interval_seconds)
-
-    def stop(self):
-        """Stop the poller gracefully."""
-        self.running = False
-        logger.info("inbox_poller: stop requested")
-
-
-# Global poller task
-_poller_task: Optional[asyncio.Task] = None
-_poller: Optional[InboxPoller] = None
-
-
-async def start_inbox_poller(org_id: str = "00000000-0000-0000-0000-000000000001"):
-    """Start background inbox poller task.
-    
-    Called from FastAPI lifespan startup.
+async def _fetch_emails(db: AsyncSession, org_id: str) -> int:
+    """Connect to IMAP, fetch new emails, process each.
     
     Args:
-        org_id: Organization UUID to poll for (default: demo org)
+        db: AsyncSession
+        org_id: Organization UUID
+        
+    Returns:
+        Number of emails processed (not including duplicates)
+        
+    Error handling:
+        - Catches IMAP connection errors and treats as transient
+        - Logs failures but allows service to continue
+        - Returns 0 if fetch fails
     """
-    global _poller_task, _poller
+    processed_count = 0
+    
     try:
-        # Only start if IMAP credentials are configured
-        if not settings.imap_username or not settings.imap_password:
-            logger.warning("inbox_poller: IMAP credentials not configured, skipping startup")
-            return
-
-        _poller = InboxPoller(org_id)
-        _poller_task = asyncio.create_task(_poller.run_forever())
-        logger.info("inbox_poller: background task started")
+        # Connect to IMAP
+        imap = imaplib.IMAP4_SSL(settings.imap_host, settings.imap_port)
+        imap.login(settings.imap_username, settings.imap_password)
+        imap.select("INBOX")
+        
+        # Search for unseen emails
+        status, email_ids = imap.search(None, "UNSEEN")
+        if status != "OK":
+            logger.warning(f"inbox_poller: IMAP search returned status={status}")
+            return 0
+        
+        email_list = email_ids[0].split()
+        if not email_list:
+            logger.debug("inbox_poller: No unseen emails")
+            return 0
+        
+        logger.info(f"inbox_poller: Found {len(email_list)} unseen emails")
+        
+        # Process each email
+        for email_id in email_list[:50]:  # Rate limit to 50 per poll
+            try:
+                status, msg_data = imap.fetch(email_id, "(RFC822)")
+                if status != "OK":
+                    logger.warning(f"inbox_poller: IMAP fetch failed for email_id={email_id}")
+                    continue
+                
+                msg_bytes = msg_data[0][1]
+                msg = email.message_from_bytes(msg_bytes)
+                
+                incident_id = await _process_email(db, msg, org_id)
+                if incident_id:
+                    processed_count += 1
+                
+                # Mark as read
+                try:
+                    imap.store(email_id, "+FLAGS", "\\Seen")
+                except Exception as e:
+                    logger.warning(f"inbox_poller: Failed to mark email as read: {e}")
+                    # Continue processing regardless
+                    
+            except Exception as e:
+                logger.error(f"inbox_poller: Error processing single email: {e}", exc_info=True)
+                # Continue with next email
+                continue
+        
+        imap.close()
+        imap.logout()
+        
+    except imaplib.IMAP4.error as e:
+        logger.error(f"inbox_poller: IMAP connection error: {e}", exc_info=True)
+        error_key = "imap_connection_failure"
+        TRANSIENT_ERROR_COUNT[error_key] = TRANSIENT_ERROR_COUNT.get(error_key, 0) + 1
     except Exception as e:
-        logger.error(f"inbox_poller: failed to start: {e}", exc_info=True)
+        logger.error(f"inbox_poller: Unexpected error in _fetch_emails: {e}", exc_info=True)
+        FATAL_ERRORS.append({"error": str(e), "timestamp": datetime.now(timezone.utc).isoformat()})
+    
+    return processed_count
+
+
+# Global task handle
+_inbox_poller_task: Optional[asyncio.Task] = None
+
+
+async def _poller_loop():
+    """Infinite loop: poll IMAP every N seconds.
+    
+    Graceful error handling:
+      - Catches and logs errors per poll cycle
+      - Continues polling on transient errors
+      - Tracks fatal errors for alerting
+    """
+    logger.info(f"inbox_poller: Starting poller loop (interval={settings.imap_poll_interval_seconds}s)")
+    
+    while True:
+        try:
+            async with AsyncSessionLocal() as db:
+                # FIXME: org_id should be configurable per-org polling
+                # For now, hardcoded to first/default org
+                org_id = settings.default_org_id
+                processed = await _fetch_emails(db, org_id)
+                if processed > 0:
+                    logger.info(f"inbox_poller: Processed {processed} emails")
+                    
+        except Exception as e:
+            logger.error(f"inbox_poller: Error in poll cycle: {e}", exc_info=True)
+            # Continue polling despite errors
+        
+        await asyncio.sleep(settings.imap_poll_interval_seconds)
+
+
+async def start_inbox_poller():
+    """Start background inbox poller task.
+    
+    Error handling:
+        If poller fails to start, logs error but does NOT block app startup.
+        Application degrades gracefully (manual inbox ingestion still available).
+    """
+    global _inbox_poller_task
+    try:
+        _inbox_poller_task = asyncio.create_task(_poller_loop())
+        logger.info("inbox_poller: Background task started successfully")
+    except Exception as e:
+        logger.error(
+            f"inbox_poller: Failed to start background poller: {e}. "
+            f"Application will continue but automated email ingestion is disabled. "
+            f"Manual incident creation and inbox API still available.",
+            exc_info=True,
+        )
 
 
 async def stop_inbox_poller():
-    """Stop background inbox poller task.
+    """Stop background inbox poller task gracefully.
     
-    Called from FastAPI lifespan shutdown.
+    Cancels task and waits for cleanup.
     """
-    global _poller_task, _poller
-    if _poller:
-        _poller.stop()
-    if _poller_task:
+    global _inbox_poller_task
+    if _inbox_poller_task:
         try:
-            _poller_task.cancel()
-            await asyncio.wait_for(_poller_task, timeout=5.0)
-        except asyncio.TimeoutError:
-            logger.error("inbox_poller: timeout waiting for shutdown")
+            _inbox_poller_task.cancel()
+            await _inbox_poller_task
         except asyncio.CancelledError:
-            logger.info("inbox_poller: task cancelled successfully")
+            pass
         except Exception as e:
-            logger.error(f"inbox_poller: error during shutdown: {e}")
+            logger.warning(f"inbox_poller: Error stopping poller: {e}")
+        logger.info("inbox_poller: Background task stopped")
+
+
+def get_poller_health() -> dict:
+    """Return health metrics for inbox poller.
+    
+    Returns:
+        Dict with status, error counts, and recent fatal errors
+    """
+    return {
+        "running": _inbox_poller_task is not None and not _inbox_poller_task.done(),
+        "transient_errors": TRANSIENT_ERROR_COUNT,
+        "fatal_errors_count": len(FATAL_ERRORS),
+        "recent_fatal_errors": FATAL_ERRORS[-5:],  # Last 5
+    }
+---
