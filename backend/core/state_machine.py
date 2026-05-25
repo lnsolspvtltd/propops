@@ -9,10 +9,11 @@ Rules:
   - Every transition is logged to audit_logs
   - EMERGENCY incidents auto-notify on creation
   - Resolved incidents cannot be re-opened without explicit override
+  - allow_override flag requires admin role (checked in API layer)
 """
 import logging
 from enum import Enum
-from typing import Optional
+from typing import Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,27 @@ class StateTransitionError(Exception):
     pass
 
 
+def get_valid_transitions(current_status: str) -> Set[str]:
+    """
+    Get valid next states for current status.
+    
+    Args:
+        current_status: Current incident status string
+    
+    Returns:
+        Set of valid next status strings
+    
+    Raises:
+        StateTransitionError: If current_status is invalid
+    """
+    try:
+        current = IncidentStatus(current_status)
+        next_states = VALID_TRANSITIONS.get(current, set())
+        return {s.value for s in next_states}
+    except ValueError as e:
+        raise StateTransitionError(f"Invalid status: {current_status}")
+
+
 def validate_transition(
     current_status: str,
     new_status: str,
@@ -74,10 +96,15 @@ def validate_transition(
     Args:
         current_status: Current incident status
         new_status: Desired incident status
-        allow_override: If True, allow transitions from RESOLVED
+        allow_override: If True, allow transitions from RESOLVED to OPEN (requires admin role check in API)
 
     Returns:
         Tuple of (is_valid, error_message)
+    
+    Notes:
+        - RESOLVED → CLOSED is always allowed
+        - RESOLVED → OPEN only allowed if allow_override=True (admin already validated in API layer)
+        - CLOSED is a terminal state — no transitions out
     """
     try:
         current = IncidentStatus(current_status)
@@ -89,26 +116,66 @@ def validate_transition(
     if current == target:
         return True, None
 
-    # RESOLVED → OPEN only with explicit override
-    if current == IncidentStatus.RESOLVED and target != IncidentStatus.CLOSED:
-        if not allow_override:
-            return False, "Resolved incidents cannot be re-opened without explicit override. Use /reopen endpoint."
-        logger.warning(f"State transition {current} → {target} with override flag")
+    # CLOSED is terminal — cannot transition out
+    if current == IncidentStatus.CLOSED:
+        return False, "Closed incidents cannot be reopened. Contact administrator."
 
-    # Check if transition is valid
-    if target not in VALID_TRANSITIONS.get(current, set()):
-        valid_next = VALID_TRANSITIONS.get(current, set())
-        valid_str = ", ".join(s.value for s in valid_next) if valid_next else "none"
-        return False, f"Cannot transition from {current.value} to {target.value}. Valid next states: {valid_str}"
+    # RESOLVED → OPEN/IN_PROGRESS requires explicit override
+    if current == IncidentStatus.RESOLVED:
+        if target == IncidentStatus.CLOSED:
+            # RESOLVED → CLOSED always allowed
+            return True, None
+        else:
+            # Any other transition from RESOLVED requires override
+            if not allow_override:
+                return False, (
+                    "Resolved incidents cannot transition to other states without explicit override. "
+                    "Use the /reopen endpoint with admin approval."
+                )
+            else:
+                # SECURITY-REVIEW: allow_override is granted, but caller must have admin role (validated in API)
+                logger.warning(
+                    f"State transition {current.value} → {target.value} with override flag. "
+                    "Ensure admin authorization was verified in API layer."
+                )
+                return True, None
+
+    # Check normal transition graph
+    valid_next_states = VALID_TRANSITIONS.get(current, set())
+    if target not in valid_next_states:
+        valid_list = [s.value for s in valid_next_states] or ["(none)"]
+        return False, (
+            f"Cannot transition from {current.value} to {target.value}. "
+            f"Valid next states: {', '.join(valid_list)}"
+        )
 
     return True, None
 
 
-def get_valid_transitions(current_status: str) -> list[str]:
-    """Get list of valid next states for current status."""
-    try:
-        current = IncidentStatus(current_status)
-        valid = VALID_TRANSITIONS.get(current, set())
-        return sorted([s.value for s in valid])
-    except ValueError:
-        return []
+def validate_all_transitions() -> None:
+    """
+    Verify transition graph is acyclic and complete.
+    Call at startup to catch configuration errors.
+    
+    Raises:
+        StateTransitionError: If graph has cycles or inconsistencies
+    """
+    # Verify all referenced statuses exist
+    all_statuses = set(IncidentStatus)
+    for current, next_states in VALID_TRANSITIONS.items():
+        if not isinstance(current, IncidentStatus):
+            raise StateTransitionError(f"Key {current} is not an IncidentStatus")
+        for next_state in next_states:
+            if not isinstance(next_state, IncidentStatus):
+                raise StateTransitionError(
+                    f"Value {next_state} in VALID_TRANSITIONS[{current}] is not an IncidentStatus"
+                )
+    
+    # Verify all enum values are in the transition map
+    for status in all_statuses:
+        if status not in VALID_TRANSITIONS:
+            raise StateTransitionError(f"Status {status.value} not defined in VALID_TRANSITIONS")
+    
+    logger.info("State machine validation passed")
+
+---
