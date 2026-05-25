@@ -2,7 +2,7 @@
 import logging
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from backend.core.config import settings
-from backend.models.incident import Base
+from backend.models.base import Base
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +60,3 @@ async def get_db():
 async def close_db():
     """Close all database connections (called on app shutdown)."""
     await engine.dispose()
-```
-
----
