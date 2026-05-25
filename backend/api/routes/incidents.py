@@ -1,5 +1,6 @@
 """Incidents API routes."""
 import uuid
+import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,6 +8,8 @@ from sqlalchemy import select, desc
 from pydantic import BaseModel
 from backend.core.database import get_db
 from backend.models.incident import Incident, AIDraft
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -45,7 +48,7 @@ async def list_incidents(
     out = []
     for inc in incidents:
         draft_count_q = await db.execute(
-            select(AIDraft).where(AIDraft.incident_id == inc.id, AIDraft.status == "pending")
+            select(AIDraft).where(AIDraft.incident_id == inc.id, AIDraft.status == "PENDING_REVIEW")
         )
         out.append(IncidentResponse(
             id=str(inc.id), title=inc.title, category=inc.category or "",
@@ -61,12 +64,16 @@ async def list_incidents(
 @router.get("/{incident_id}")
 async def get_incident(incident_id: str, db: AsyncSession = Depends(get_db)):
     """Get a single incident with all drafts."""
-    result = await db.execute(select(Incident).where(Incident.id == uuid.UUID(incident_id)))
+    try:
+        incident_uuid = uuid.UUID(incident_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid incident_id format: {incident_id!r}")
+    result = await db.execute(select(Incident).where(Incident.id == incident_uuid))
     inc = result.scalar_one_or_none()
     if not inc:
         raise HTTPException(status_code=404, detail="Incident not found")
     drafts_q = await db.execute(select(AIDraft).where(AIDraft.incident_id == inc.id))
-    drafts = [{"id": str(d.id), "subject": d.subject, "body": d.body, "status": d.status}
+    drafts = [{"id": str(d.id), "draft_text": d.draft_text, "status": d.status}
               for d in drafts_q.scalars().all()]
     return {
         "id": str(inc.id), "title": inc.title, "category": inc.category,
