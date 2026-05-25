@@ -420,6 +420,3 @@ MESSAGE (first 3000 chars):
         success=False,
         error="Triage max retries exceeded",
     )
-```
-
----
