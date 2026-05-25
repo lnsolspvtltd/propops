@@ -1,9 +1,9 @@
 """SQLAlchemy models for PropOps."""
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Text, Float, DateTime, ForeignKey, Integer
+from sqlalchemy import Column, String, Text, Float, DateTime, ForeignKey, Integer, Index
 from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, Mapped, mapped_column
 from backend.core.database import Base
 
 
@@ -45,38 +45,43 @@ class Unit(Base):
 class Incident(Base):
     __tablename__ = "incidents"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    org_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False)
+    org_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     property_id = Column(UUID(as_uuid=True), ForeignKey("properties.id"))
     unit_id = Column(UUID(as_uuid=True), ForeignKey("units.id"))
-    thread_id = Column(UUID(as_uuid=True), default=uuid.uuid4, nullable=False)
+    thread_id = Column(UUID(as_uuid=True), default=uuid.uuid4, nullable=False, index=True)
     title = Column(String(500), nullable=False)
     category = Column(String(100))
-    urgency = Column(String(50))
-    status = Column(String(50), default="OPEN")
+    urgency = Column(String(50), index=True)
+    status = Column(String(50), default="OPEN", index=True)
     ai_summary = Column(Text)
     ai_confidence = Column(Float)
     source_channel = Column(String(50))
     source_address = Column(String(255))
     raw_message = Column(Text)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, index=True)
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
     resolved_at = Column(DateTime(timezone=True))
     org = relationship("Organization", back_populates="incidents")
     drafts = relationship("AIDraft", back_populates="incident", cascade="all, delete")
     comm_logs = relationship("CommunicationLog", back_populates="incident", cascade="all, delete")
 
+    __table_args__ = (
+        Index("idx_incidents_org_status", "org_id", "status"),
+        Index("idx_incidents_urgency_status", "urgency", "status"),
+    )
+
 
 class AIDraft(Base):
     __tablename__ = "ai_drafts"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    incident_id = Column(UUID(as_uuid=True), ForeignKey("incidents.id"), nullable=False)
+    incident_id = Column(UUID(as_uuid=True), ForeignKey("incidents.id"), nullable=False, index=True)
     draft_type = Column(String(50))
     recipient_email = Column(String(255))
     subject = Column(String(500))
     body = Column(Text, nullable=False)
     ai_model = Column(String(100))
     confidence = Column(Float)
-    status = Column(String(50), default="pending")
+    status = Column(String(50), default="pending", index=True)
     approved_by = Column(String(255))
     approved_at = Column(DateTime(timezone=True))
     sent_at = Column(DateTime(timezone=True))
@@ -87,14 +92,17 @@ class AIDraft(Base):
 class CommunicationLog(Base):
     __tablename__ = "communication_logs"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    incident_id = Column(UUID(as_uuid=True), ForeignKey("incidents.id"), nullable=False)
-    thread_id = Column(UUID(as_uuid=True), nullable=False)
+    incident_id = Column(UUID(as_uuid=True), ForeignKey("incidents.id"), nullable=False, index=True)
+    thread_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     direction = Column(String(10), nullable=False)
     channel = Column(String(50), nullable=False)
     sender = Column(String(255))
     recipient = Column(String(255))
     subject = Column(String(500))
     body = Column(Text)
-    raw_headers = Column(JSONB)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    raw_headers = Column(JSONB, default={})
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, index=True)
     incident = relationship("Incident", back_populates="comm_logs")
+```
+
+---
