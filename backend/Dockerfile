@@ -35,4 +35,3 @@ HEALTHCHECK --interval=10s --timeout=5s --retries=3 \
 
 # Default command (overridable by docker-compose)
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
----
