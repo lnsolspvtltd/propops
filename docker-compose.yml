@@ -1,101 +1,125 @@
-version: "3.8"
+version: "3.9"
 
 services:
+  # PostgreSQL 16 — persistent volume, schema auto-applied
   postgres:
     image: postgres:16-alpine
-    container_name: propops-db
+    container_name: propops-postgres
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: propops
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-propops}
     ports:
       - "5432:5432"
     volumes:
+      # Named volume for data persistence
       - postgres_data:/var/lib/postgresql/data
-      - ./backend/infrastructure/init.sql:/docker-entrypoint-initdb.d/schema.sql
+      # Mount init SQL script — runs on first container start
+      - ./backend/infrastructure/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d propops"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-propops}"]
       interval: 5s
-      timeout: 10s
-      retries: 5
+      timeout: 5s
+      retries: 10
       start_period: 10s
     networks:
       - propops-network
+    restart: unless-stopped
 
+  # FastAPI Backend — hot reload via volume mount
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: propops-api
+    container_name: propops-backend
     environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/propops
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-sk-test-key}
-      ENVIRONMENT: development
-      LOG_LEVEL: INFO
-      CORS_ORIGINS: '["http://localhost:3000"]'
+      # Database
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-propops}
+      # AI
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Email
+      IMAP_HOST: ${IMAP_HOST:-imap.gmail.com}
+      IMAP_PORT: ${IMAP_PORT:-993}
       IMAP_USERNAME: ${IMAP_USERNAME:-}
       IMAP_PASSWORD: ${IMAP_PASSWORD:-}
+      # SMTP
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USERNAME: ${SMTP_USERNAME:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      # Twilio
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
       TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER:-}
+      # App
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:3000"]}
     ports:
       - "8000:8000"
+    volumes:
+      # Hot reload: mount source code
+      - ./backend:/app/backend:ro
+      - ./backend/main.py:/app/main.py:ro
     depends_on:
       postgres:
         condition: service_healthy
-    volumes:
-      - ./backend:/app/backend
-      - ./backend/main.py:/app/main.py
+    networks:
+      - propops-network
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 15s
-    networks:
-      - propops-network
 
+  # Next.js Frontend — hot reload via volume mount
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: propops-web
+    container_name: propops-frontend
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
-      NODE_ENV: development
+      # Point to backend container (docker network resolution)
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      NODE_ENV: ${NODE_ENV:-development}
     ports:
       - "3000:3000"
+    volumes:
+      # Hot reload: mount source code
+      - ./frontend:/app:delegated
+      - /app/node_modules
+      - /app/.next
     depends_on:
       backend:
         condition: service_healthy
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-      - /app/.next
-    command: npm run dev
     networks:
       - propops-network
+    command: npm run dev
+    restart: unless-stopped
 
+  # Adminer — optional DB admin UI
   adminer:
     image: adminer:latest
     container_name: propops-adminer
-    ports:
-      - "8081:8080"
-    depends_on:
-      - postgres
     environment:
       ADMINER_DEFAULT_SERVER: postgres
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
     networks:
       - propops-network
-
-volumes:
-  postgres_data:
-    driver: local
+    restart: unless-stopped
 
 networks:
   propops-network:
     driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
 ---
