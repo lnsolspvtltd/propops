@@ -1,2 +1,1 @@
-"""Tests for PropOps backend."""
----
+"""Test suite for PropOps backend."""
