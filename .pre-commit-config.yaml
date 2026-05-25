@@ -1,10 +1,29 @@
 # Pre-commit hooks for PropOps
-# Install with: pip install pre-commit && pre-commit install
-# Run manually: pre-commit run --all-files
+# Install : pip install pre-commit && pre-commit install
+# Run     : pre-commit run --all-files
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.5.0
     hooks:
       - id: end-of-file-fixer
-      -
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-json
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: check-merge-conflict
+      - id: debug-statements
+
+  - repo: https://github.com/psf/black
+    rev: 24.3.0
+    hooks:
+      - id: black
+        language_version: python3
+        args: ["--line-length=100"]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.3.4
+    hooks:
+      - id: ruff
+        args: ["--fix"]
