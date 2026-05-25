@@ -1,12 +1,13 @@
 """Approval queue API routes."""
 import uuid
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from backend.core.database import get_db
 from backend.models.incident import AIDraft, Incident
+from backend.services.email_sender import send_approved_draft
 
 router = APIRouter()
 
@@ -40,17 +41,45 @@ async def list_pending_approvals(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/{draft_id}/approve")
-async def approve_draft(draft_id: str, req: ApproveRequest, db: AsyncSession = Depends(get_db)):
-    """Approve a draft — marks it ready to send."""
+async def approve_draft(
+    draft_id: str,
+    req: ApproveRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db)
+):
+    """Approve a draft and send it via SMTP.
+    
+    1. Marks draft as 'approved' with approved_at timestamp
+    2. Immediately sends email via SMTP (background task)
+    3. Updates draft status to 'sent' or 'send_failed'
+    4. Creates communication_logs entry
+    5. Updates incident.status to IN_PROGRESS if first outbound
+    """
     result = await db.execute(select(AIDraft).where(AIDraft.id == uuid.UUID(draft_id)))
     draft = result.scalar_one_or_none()
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
+    
+    if draft.status != "pending":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Draft status is {draft.status}, expected pending"
+        )
+    
+    # Mark as approved
     draft.status = "approved"
     draft.approved_by = req.approved_by
     draft.approved_at = datetime.utcnow()
     await db.commit()
-    return {"status": "approved", "draft_id": draft_id}
+    
+    # Queue email send as background task
+    background_tasks.add_task(send_approved_draft, db, draft_id, req.approved_by)
+    
+    return {
+        "status": "approved",
+        "draft_id": draft_id,
+        "message": "Draft approved. Email will be sent shortly."
+    }
 
 
 @router.post("/{draft_id}/reject")
@@ -60,6 +89,14 @@ async def reject_draft(draft_id: str, req: RejectRequest, db: AsyncSession = Dep
     draft = result.scalar_one_or_none()
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
+    
+    if draft.status != "pending":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Draft status is {draft.status}, expected pending"
+        )
+    
     draft.status = "rejected"
     await db.commit()
     return {"status": "rejected", "draft_id": draft_id}
+</end>
