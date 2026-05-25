@@ -1,6 +1,6 @@
 """Audit log model and utilities."""
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Any
 from sqlalchemy import Column, String, DateTime, ForeignKey, Index
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -18,7 +18,7 @@ class AuditLog(Base):
     action = Column(String(100), nullable=False)  # e.g., "status_change", "created", "notified"
     actor = Column(String(255), nullable=False)  # 'ai:triage', 'human:user@email.com', 'system:automation'
     details = Column(JSONB, default={})  # Structured data: {from_status, to_status, reason, ...}
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
     __table_args__ = (
         Index("idx_audit_logs_incident", "incident_id"),
