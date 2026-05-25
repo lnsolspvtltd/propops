@@ -1,6 +1,6 @@
 """Approval queue API routes."""
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -69,7 +69,7 @@ async def approve_draft(
     # Mark as approved
     draft.status = "approved"
     draft.approved_by = req.approved_by
-    draft.approved_at = datetime.utcnow()
+    draft.approved_at = datetime.now(timezone.utc)
     await db.commit()
     
     # Queue email send as background task
@@ -99,4 +99,3 @@ async def reject_draft(draft_id: str, req: RejectRequest, db: AsyncSession = Dep
     draft.status = "rejected"
     await db.commit()
     return {"status": "rejected", "draft_id": draft_id}
-</end>
