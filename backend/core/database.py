@@ -1,21 +1,35 @@
-"""PostgreSQL async database connection via SQLAlchemy 2.0+."""
+"""PostgreSQL async database connection via SQLAlchemy 2.0+.
+
+This module provides:
+- Async engine with configurable connection pooling
+- Session factory for dependency injection
+- Database lifecycle management (init/shutdown)
+
+Never use metadata.create_all() in production — Alembic migrations are canonical.
+"""
 import logging
+from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from backend.core.config import settings
-from backend.models.base import Base
 
 logger = logging.getLogger(__name__)
 
-# Create async engine with connection pooling optimized for FastAPI
+# Create async engine with connection pooling
+# Pool settings are tunable via environment variables (see config.py)
 engine = create_async_engine(
     settings.database_url,
-    echo=settings.environment == "development",  # SQL logging only in dev
-    pool_size=10,
-    max_overflow=20,
+    echo=settings.environment == "development",  # SQL logging only in dev; disable for prod
+    pool_size=settings.database_pool_size,
+    max_overflow=settings.database_max_overflow,
     pool_pre_ping=True,  # Verify connections before use
+    pool_recycle=3600,  # Recycle connections after 1 hour
+    connect_args={
+        "server_settings": {"application_name": "propops"},
+        "timeout": settings.database_pool_timeout,
+    },
 )
 
-# Session factory
+# Session factory for FastAPI dependency injection
 AsyncSessionLocal = async_sessionmaker(
     engine,
     class_=AsyncSession,
@@ -24,28 +38,20 @@ AsyncSessionLocal = async_sessionmaker(
 )
 
 
-async def init_db():
-    """Initialize database — create all tables from models.
-    
-    Called on application startup via lifespan context manager.
-    Safe to run multiple times (idempotent with CREATE TABLE IF NOT EXISTS).
-    """
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database initialization complete")
-    except Exception as e:
-        logger.error(f"Failed to initialize database: {e}", exc_info=True)
-        raise
-
-
-async def get_db():
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """FastAPI dependency — yields async DB session.
-    
+
     Automatically commits on success, rolls back on exception.
+    
+    WARNING: Do NOT call init_db() from here. Use Alembic migrations as canonical.
+    
     Usage:
         async def my_route(db: AsyncSession = Depends(get_db)):
-            result = await db.execute(...)
+            result = await db.execute(select(User))
+            return result.scalars().all()
+    
+    Yields:
+        AsyncSession: Database session with automatic rollback on error.
     """
     async with AsyncSessionLocal() as session:
         try:
@@ -53,10 +59,16 @@ async def get_db():
             await session.commit()
         except Exception as e:
             await session.rollback()
-            logger.error(f"Database session error: {e}", exc_info=True)
+            logger.error("Database session error: %s", e, exc_info=True)
             raise
 
 
-async def close_db():
-    """Close all database connections (called on app shutdown)."""
+async def close_db() -> None:
+    """Close all database connections.
+    
+    Called on application shutdown via lifespan context manager.
+    Ensures all connection pool connections are properly disposed.
+    """
     await engine.dispose()
+    logger.info("Database connections closed")
+---
