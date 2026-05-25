@@ -60,5 +60,3 @@ async def log_incident_action(
     logger.info(
         f"audit_log: {action} | incident={incident_id} | actor={actor} | details={details}"
     )
-</
->
