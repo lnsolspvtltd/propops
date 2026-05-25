@@ -1,6 +1,7 @@
 """Application configuration from environment variables."""
 from functools import lru_cache
 from typing import Optional
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -41,6 +42,20 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.environment == "production"
 
+
+
+    @model_validator(mode='after')
+    def validate_production_secrets(self) -> 'Settings':
+        """Raise at startup if production secrets are missing."""
+        if self.environment == 'production':
+            if not self.secret_key:
+                raise ValueError(
+                    'SECRET_KEY must be set in production. '
+                    'Generate with: openssl rand -hex 32'
+                )
+            if not self.anthropic_api_key:
+                raise ValueError('ANTHROPIC_API_KEY must be set in production.')
+        return self
 
 @lru_cache
 def get_settings() -> Settings:
