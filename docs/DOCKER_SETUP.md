@@ -283,4 +283,3 @@ See `docs/DEPLOYMENT.md` for production guidance.
 ---
 
 Last updated: 2025-01-10
----
