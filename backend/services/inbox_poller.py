@@ -14,7 +14,6 @@ Uses structured error tracking to distinguish retryable vs non-recoverable error
 import asyncio
 import email
 import imaplib
-import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -256,7 +255,8 @@ async def _fetch_emails(db: AsyncSession, org_id: str) -> int:
         - Returns 0 if fetch fails
     """
     processed_count = 0
-    
+    imap = None
+
     try:
         # Connect to IMAP
         imap = imaplib.IMAP4_SSL(settings.imap_host, settings.imap_port)
@@ -303,9 +303,6 @@ async def _fetch_emails(db: AsyncSession, org_id: str) -> int:
                 # Continue with next email
                 continue
         
-        imap.close()
-        imap.logout()
-        
     except imaplib.IMAP4.error as e:
         logger.error(f"inbox_poller: IMAP connection error: {e}", exc_info=True)
         error_key = "imap_connection_failure"
@@ -313,7 +310,14 @@ async def _fetch_emails(db: AsyncSession, org_id: str) -> int:
     except Exception as e:
         logger.error(f"inbox_poller: Unexpected error in _fetch_emails: {e}", exc_info=True)
         FATAL_ERRORS.append({"error": str(e), "timestamp": datetime.now(timezone.utc).isoformat()})
-    
+    finally:
+        if imap is not None:
+            try:
+                imap.close()
+                imap.logout()
+            except Exception:
+                pass  # Best effort cleanup
+
     return processed_count
 
 
