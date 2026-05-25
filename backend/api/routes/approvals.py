@@ -161,4 +161,3 @@ async def reject_draft(
         logger.error(f"Error rejecting draft {draft_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal error — see logs")
 
----
