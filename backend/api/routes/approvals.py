@@ -69,7 +69,11 @@ async def approve_draft(
         HTTPException: 404 if draft not found
     """
     try:
-        result = await db.execute(select(AIDraft).where(AIDraft.id == uuid.UUID(draft_id)))
+        try:
+            draft_uuid = uuid.UUID(draft_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"Invalid draft_id format: {draft_id!r}")
+        result = await db.execute(select(AIDraft).where(AIDraft.id == draft_uuid))
         draft = result.scalar_one_or_none()
         if not draft:
             raise HTTPException(status_code=404, detail="Draft not found")
@@ -113,7 +117,11 @@ async def reject_draft(
         Rejected drafts can be modified and resubmitted.
     """
     try:
-        result = await db.execute(select(AIDraft).where(AIDraft.id == uuid.UUID(draft_id)))
+        try:
+            draft_uuid = uuid.UUID(draft_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"Invalid draft_id format: {draft_id!r}")
+        result = await db.execute(select(AIDraft).where(AIDraft.id == draft_uuid))
         draft = result.scalar_one_or_none()
         if not draft:
             raise HTTPException(status_code=404, detail="Draft not found")
@@ -130,4 +138,3 @@ async def reject_draft(
         await db.rollback()
         logger.error(f"Error rejecting draft {draft_id}: {e}", exc_info=True)
         raise
----
