@@ -49,6 +49,3 @@ def mock_anthropic_client():
         mock_instance = MagicMock()
         mock_class.return_value = mock_instance
         yield mock_instance
-```
-
----
