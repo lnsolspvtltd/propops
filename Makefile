@@ -50,7 +50,7 @@ rebuild:
 
 clean:
 	docker-compose down -v
-	docker system prune -f
+	docker compose down -v --remove-orphans
 
 shell-backend:
 	docker-compose exec backend /bin/bash
