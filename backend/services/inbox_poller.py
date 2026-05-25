@@ -219,4 +219,3 @@ class InboxPoller:
         while self.running:
             await self.poll_once()
             await asyncio.sleep(settings.imap_poll_interval_seconds)
----
