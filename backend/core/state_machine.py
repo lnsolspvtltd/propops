@@ -178,4 +178,3 @@ def validate_all_transitions() -> None:
     
     logger.info("State machine validation passed")
 
----
