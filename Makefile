@@ -1,35 +1,34 @@
-.PHONY: help up down logs build rebuild clean test frontend-install backend-install db-reset health
+.PHONY: help up down logs logs-backend logs-frontend logs-postgres build rebuild clean test shell-backend shell-postgres
 
 help:
-	@echo "PropOps Development Commands"
+	@echo "PropOps Local Dev — Docker Compose Commands"
 	@echo ""
-	@echo "  make up              - Start all services (postgres, backend, frontend, adminer)"
-	@echo "  make down            - Stop all services"
-	@echo "  make rebuild         - Rebuild Docker images and start"
-	@echo "  make logs            - Stream logs from all services"
-	@echo "  make logs-backend    - Stream backend logs only"
-	@echo "  make logs-frontend   - Stream frontend logs only"
-	@echo "  make clean           - Remove all containers, volumes, and build artifacts"
-	@echo "  make db-reset        - Drop and recreate database"
-	@echo "  make health          - Check health of all services"
-	@echo "  make test-backend    - Run backend tests"
-	@echo "  make backend-install - Install backend dependencies"
-	@echo "  make frontend-install- Install frontend dependencies"
+	@echo "Usage:"
+	@echo "  make up              Start all services (postgres, backend, frontend, adminer)"
+	@echo "  make down            Stop all services"
+	@echo "  make logs            Tail logs from all services"
+	@echo "  make logs-backend    Tail backend logs only"
+	@echo "  make logs-frontend   Tail frontend logs only"
+	@echo "  make logs-postgres   Tail postgres logs only"
+	@echo "  make build           Build Docker images (with --build flag)"
+	@echo "  make rebuild         Rebuild images from scratch (no cache)"
+	@echo "  make clean           Remove containers, volumes, and networks"
+	@echo "  make shell-backend   Open shell in backend container"
+	@echo "  make shell-postgres  Open psql shell in postgres"
+	@echo "  make test            Run backend tests"
 	@echo ""
-	@echo "Quick Start:"
-	@echo "  1. cp .env.example .env"
-	@echo "  2. make up"
-	@echo "  3. Open http://localhost:3000"
+	@echo "Services:"
+	@echo "  Backend:   http://localhost:8000"
+	@echo "  Frontend:  http://localhost:3000"
+	@echo "  Adminer:   http://localhost:8080 (DB admin UI)"
+	@echo "  Postgres:  localhost:5432"
+	@echo ""
 
 up:
 	docker-compose up --build
 
 down:
 	docker-compose down
-
-rebuild:
-	docker-compose down
-	docker-compose up --build
 
 logs:
 	docker-compose logs -f
@@ -40,42 +39,27 @@ logs-backend:
 logs-frontend:
 	docker-compose logs -f frontend
 
-logs-db:
+logs-postgres:
 	docker-compose logs -f postgres
 
-health:
-	@echo "Checking service health..."
-	@docker-compose exec -T backend curl -s http://localhost:8000/api/v1/health | jq . || echo "Backend: DOWN"
-	@echo "Frontend: http://localhost:3000"
-	@echo "Adminer (DB UI): http://localhost:8081"
-	@docker-compose exec -T postgres pg_isready -U postgres -d propops && echo "Database: UP" || echo "Database: DOWN"
+build:
+	docker-compose build
+
+rebuild:
+	docker-compose build --no-cache
 
 clean:
 	docker-compose down -v
-	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-	find . -type d -name .pytest_cache -exec rm -rf {} + 2>/dev/null || true
-	find . -type d -name node_modules -exec rm -rf {} + 2>/dev/null || true
-	find . -type d -name .next -exec rm -rf {} + 2>/dev/null || true
-
-db-reset:
-	docker-compose exec -T postgres psql -U postgres -d propops -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
-	@echo "Database schema reset. Restart containers to reinitialize."
-
-test-backend:
-	docker-compose exec -T backend pytest tests/ -v --cov=backend --cov-report=term-missing
-
-backend-install:
-	docker-compose run --rm backend pip install -r requirements.txt
-
-frontend-install:
-	docker-compose run --rm frontend npm install
+	docker system prune -f
 
 shell-backend:
-	docker-compose exec backend bash
+	docker-compose exec backend /bin/bash
 
-shell-frontend:
-	docker-compose exec frontend sh
-
-shell-db:
+shell-postgres:
 	docker-compose exec postgres psql -U postgres -d propops
+
+test:
+	docker-compose exec backend pytest -v --cov=backend --cov-report=term-missing
+
+.DEFAULT_GOAL := help
 ---
