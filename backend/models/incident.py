@@ -183,7 +183,7 @@ class CommunicationLog(Base):
     to_addr = Column(String(255))
     subject = Column(String(500))
     body_preview = Column(Text)
-    metadata = Column(JSONB, default={})
+    extra_data = Column(JSONB, default={}, name="metadata")
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
