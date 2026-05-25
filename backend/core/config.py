@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     # App
     environment: str = "development"
     log_level: str = "INFO"
-    secret_key: str = "change-me-in-production"
+    secret_key: str = ""  # REQUIRED: set SECRET_KEY in environment
     cors_origins: list[str] = ["http://localhost:3000"]
 
     @property
