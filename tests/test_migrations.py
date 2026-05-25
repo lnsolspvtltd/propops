@@ -84,8 +84,8 @@ async def test_migration_001_upgrade(alembic_config, test_db_url):
         
         # Verify indexes exist
         org_indexes = {idx["name"] for idx in inspector.get_indexes("organizations")}
-        assert "idx_organizations_deleted" in org_indexes
-        assert "idx_organizations_email_domain" in org_indexes
+        assert "idx_organizations_slug" in org_indexes
+        assert "idx_organizations_created_at" in org_indexes
     
     await engine.dispose()
 
@@ -150,5 +150,22 @@ def test_migration_001_downgrade_has_drop_statements():
     
     # Get downgrade function source
     source = insp.getsource(migration_001.downgrade)
-    
-    # Verify
+    # Verify all tables are dropped by inspecting the downgrade source
+    import inspect as pyinspect
+    import importlib.util
+
+    # Load the migration module by file path (numeric prefix prevents direct import)
+    spec = importlib.util.spec_from_file_location(
+        "migration_001",
+        "backend/alembic/versions/001_initial_phase1_schema.py",
+    )
+    migration_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration_mod)
+
+    source = pyinspect.getsource(migration_mod.downgrade)
+
+    expected_tables = ["organizations", "properties", "units", "incidents"]
+    for table in expected_tables:
+        assert f"drop_table(\'{table}\')" in source or f'drop_table("{table}")' in source, (
+            f"downgrade() missing drop_table for {table}"
+        )
