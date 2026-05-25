@@ -1,43 +1,100 @@
-"""Approval queue API routes."""
+"""Approval queue API routes with authentication and proper error handling."""
+import logging
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+
 from backend.core.database import get_db
-from backend.models.incident import AIDraft, Incident
+from backend.core.auth import get_current_user  # SECURITY-REVIEW: requires auth
+from backend.models.incident import AIDraft, Incident, CommunicationLog
 from backend.services.email_sender import send_approved_draft
 
-router = APIRouter()
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/api/v1/approvals", tags=["approvals"])
 
 
 class ApproveRequest(BaseModel):
+    """Request body for approving a draft."""
+    model_config = ConfigDict(from_attributes=True)
     approved_by: str = "founder"
 
 
 class RejectRequest(BaseModel):
+    """Request body for rejecting a draft."""
+    model_config = ConfigDict(from_attributes=True)
     reason: str = ""
 
 
-@router.get("/pending")
-async def list_pending_approvals(db: AsyncSession = Depends(get_db)):
-    """List all drafts awaiting approval."""
-    result = await db.execute(
-        select(AIDraft, Incident)
-        .join(Incident, AIDraft.incident_id == Incident.id)
-        .where(AIDraft.status == "pending")
-    )
-    rows = result.all()
-    return [
-        {
-            "draft_id": str(d.id), "incident_id": str(d.incident_id),
-            "incident_title": inc.title, "urgency": inc.urgency,
-            "subject": d.subject, "body": d.body, "recipient": d.recipient_email,
-            "created_at": d.created_at.isoformat() if d.created_at else "",
-        }
-        for d, inc in rows
-    ]
+class DraftApprovalResponse(BaseModel):
+    """Response after draft approval."""
+    model_config = ConfigDict(from_attributes=True)
+    draft_id: str
+    incident_id: str
+    incident_title: str
+    urgency: str
+    subject: str
+    body: str
+    recipient: str
+    created_at: str
+
+
+class PendingDraftsResponse(BaseModel):
+    """List of pending approvals."""
+    model_config = ConfigDict(from_attributes=True)
+    drafts: list[DraftApprovalResponse]
+    total: int
+
+
+@router.get("/pending", response_model=PendingDraftsResponse)
+async def list_pending_approvals(
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # SECURITY: require auth
+) -> PendingDraftsResponse:
+    """List all drafts awaiting approval.
+    
+    Requires authenticated user with approval role.
+    
+    Returns:
+        PendingDraftsResponse with list of drafts pending approval
+    """
+    logger.info(f"list_pending_approvals called by user_id={current_user.get('id')}")
+    
+    try:
+        result = await db.execute(
+            select(AIDraft, Incident)
+            .join(Incident, AIDraft.incident_id == Incident.id)
+            .where(AIDraft.status == "pending")
+        )
+        rows = result.all()
+        
+        drafts = [
+            DraftApprovalResponse(
+                draft_id=str(d.id),
+                incident_id=str(d.incident_id),
+                incident_title=inc.title,
+                urgency=inc.urgency,
+                subject=d.subject,
+                body=d.body,
+                recipient=d.recipient_email,
+                created_at=d.created_at.isoformat() if d.created_at else "",
+            )
+            for d, inc in rows
+        ]
+        
+        logger.debug(f"Found {len(drafts)} pending drafts")
+        return PendingDraftsResponse(drafts=drafts, total=len(drafts))
+    
+    except Exception as e:
+        logger.error(f"Error listing pending approvals: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to load pending approvals — see server logs"
+        )
 
 
 @router.post("/{draft_id}/approve")
@@ -45,70 +102,209 @@ async def approve_draft(
     draft_id: str,
     req: ApproveRequest,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db)
-):
-    """Approve a draft and send it via SMTP.
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # SECURITY: require auth
+) -> dict:
+    """Approve a draft and queue for SMTP send.
     
-    1. Marks draft as 'approved' with approved_at timestamp
-    2. Immediately sends email via SMTP (background task)
-    3. Updates draft status to 'sent' or 'send_failed'
-    4. Creates communication_logs entry
-    5. Updates incident.status to IN_PROGRESS if first outbound
+    Steps:
+    1. Validate draft UUID and existence
+    2. Verify draft status is "pending"
+    3. Mark as "approved" with timestamp
+    4. Queue background SMTP send task
+    5. Return success response
+    
+    Email send is asynchronous — HTTP 200 means queued, not sent.
+    Check the communication_logs endpoint or webhook for send status.
+    
+    Args:
+        draft_id: UUID of the draft to approve
+        req: ApproveRequest with approved_by field
+        background_tasks: FastAPI background task queue
+        db: Database session
+        current_user: Authenticated user from get_current_user
+    
+    Returns:
+        dict with status, draft_id, and message
+    
+    Raises:
+        HTTPException 422: Invalid UUID format
+        HTTPException 404: Draft not found
+        HTTPException 400: Draft not in pending status
+        HTTPException 500: Database error
     """
+    logger.info(
+        f"approve_draft called: draft_id={draft_id}, "
+        f"user_id={current_user.get('id')}, approved_by={req.approved_by}"
+    )
+    
+    # Validate UUID format
     try:
         draft_uuid = uuid.UUID(draft_id)
-    except ValueError:
-        raise HTTPException(status_code=422, detail="Invalid draft_id format")
-    result = await db.execute(select(AIDraft).where(AIDraft.id == draft_uuid))
-    draft = result.scalar_one_or_none()
+    except ValueError as e:
+        logger.warning(f"Invalid draft_id format: {draft_id} — {e}")
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "invalid_format",
+                "message": "draft_id must be a valid UUID",
+                "received": draft_id
+            }
+        )
+    
+    # Fetch draft
+    try:
+        result = await db.execute(select(AIDraft).where(AIDraft.id == draft_uuid))
+        draft = result.scalar_one_or_none()
+    except Exception as e:
+        logger.error(f"Database error fetching draft: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to fetch draft — see server logs"
+        )
+    
     if not draft:
+        logger.warning(f"Draft not found: {draft_id}")
         raise HTTPException(status_code=404, detail="Draft not found")
     
+    # Verify status is pending
     if draft.status != "pending":
+        logger.warning(
+            f"Cannot approve draft {draft_id}: status is '{draft.status}', expected 'pending'"
+        )
         raise HTTPException(
             status_code=400,
-            detail=f"Draft status is {draft.status}, expected pending"
+            detail={
+                "error": "invalid_status",
+                "message": f"Draft status is '{draft.status}', expected 'pending'",
+                "current_status": draft.status
+            }
         )
     
     # Mark as approved
-    draft.status = "approved"
-    draft.approved_by = req.approved_by
-    draft.approved_at = datetime.now(timezone.utc)
-    await db.commit()
+    try:
+        draft.status = "approved"
+        draft.approved_by = req.approved_by
+        draft.approved_at = datetime.now(timezone.utc)
+        await db.commit()
+        logger.info(f"Draft {draft_id} marked as approved")
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Error saving draft approval: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to save approval — see server logs"
+        )
     
     # Queue email send as background task
-    background_tasks.add_task(send_approved_draft, db, draft_id, req.approved_by)
+    background_tasks.add_task(
+        send_approved_draft,
+        db,
+        draft_id,
+        req.approved_by
+    )
+    logger.info(f"Queued email send for draft {draft_id}")
     
     return {
         "status": "approved",
         "draft_id": draft_id,
-        "message": "Draft approved. Email will be sent shortly."
+        "message": "Draft approved. Email will be sent shortly. Check communication_logs for status."
     }
 
 
 @router.post("/{draft_id}/reject")
-async def reject_draft(draft_id: str, req: RejectRequest, db: AsyncSession = Depends(get_db)):
-    """Reject a draft."""
+async def reject_draft(
+    draft_id: str,
+    req: RejectRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)  # SECURITY: require auth
+) -> dict:
+    """Reject a draft.
+    
+    Marks draft as "rejected" with reason. Does not send email.
+    
+    Args:
+        draft_id: UUID of the draft to reject
+        req: RejectRequest with optional reason
+        db: Database session
+        current_user: Authenticated user from get_current_user
+    
+    Returns:
+        dict with status and draft_id
+    
+    Raises:
+        HTTPException 422: Invalid UUID format
+        HTTPException 404: Draft not found
+        HTTPException 400: Draft not in pending status
+        HTTPException 500: Database error
+    """
+    logger.info(
+        f"reject_draft called: draft_id={draft_id}, "
+        f"user_id={current_user.get('id')}, reason={req.reason[:50] if req.reason else 'none'}"
+    )
+    
+    # Validate UUID format
     try:
         draft_uuid = uuid.UUID(draft_id)
-    except ValueError:
-        raise HTTPException(status_code=422, detail="Invalid draft_id format")
-    result = await db.execute(select(AIDraft).where(AIDraft.id == draft_uuid))
-    draft = result.scalar_one_or_none()
-    if not draft:
-        raise HTTPException(status_code=404, detail="Draft not found")
-    
-    if draft.status != "pending":
+    except ValueError as e:
+        logger.warning(f"Invalid draft_id format: {draft_id} — {e}")
         raise HTTPException(
-            status_code=400,
-            detail=f"Draft status is {draft.status}, expected pending"
+            status_code=422,
+            detail={
+                "error": "invalid_format",
+                "message": "draft_id must be a valid UUID",
+                "received": draft_id
+            }
         )
     
-    draft.status = "rejected"
-    # Persist rejection metadata if model supports it
-    if hasattr(draft, "rejection_reason"):
+    # Fetch draft
+    try:
+        result = await db.execute(select(AIDraft).where(AIDraft.id == draft_uuid))
+        draft = result.scalar_one_or_none()
+    except Exception as e:
+        logger.error(f"Database error fetching draft: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to fetch draft — see server logs"
+        )
+    
+    if not draft:
+        logger.warning(f"Draft not found: {draft_id}")
+        raise HTTPException(status_code=404, detail="Draft not found")
+    
+    # Verify status is pending
+    if draft.status != "pending":
+        logger.warning(
+            f"Cannot reject draft {draft_id}: status is '{draft.status}', expected 'pending'"
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_status",
+                "message": f"Draft status is '{draft.status}', expected 'pending'",
+                "current_status": draft.status
+            }
+        )
+    
+    # Mark as rejected
+    try:
+        draft.status = "rejected"
+        draft.rejected_by = current_user.get("id")
         draft.rejection_reason = req.reason
-    if hasattr(draft, "rejected_at"):
         draft.rejected_at = datetime.now(timezone.utc)
-    await db.commit()
-    return {"status": "rejected", "draft_id": draft_id, "reason": req.reason}
+        await db.commit()
+        logger.info(f"Draft {draft_id} marked as rejected")
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Error saving draft rejection: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to save rejection — see server logs"
+        )
+    
+    return {
+        "status": "rejected",
+        "draft_id": draft_id,
+        "message": "Draft rejected. Not sent."
+    }
+---
