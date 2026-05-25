@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     database_url: Optional[str] = Field(
         default=None,
         description="PostgreSQL async connection string (postgresql+asyncpg://user:password@host:port/db). "
-                    "REQUIRED — must be set explicitly; no production default provided."
+                    "Required in production; optional in development/staging."
     )
     database_pool_size: int = Field(
         default=5,
@@ -176,7 +176,7 @@ class Settings(BaseSettings):
     slack_webhook_url: Optional[str] = Field(
         default=None,
         description="Slack webhook URL for incident notifications. "
-                    "Get from Slack workspace Settings → Integrations → Incoming Webhooks. "
+                    "Get from Slack workspace Settings -> Integrations -> Incoming Webhooks. "
                     "Leave blank to disable."
     )
     slack_channel: Optional[str] = Field(
@@ -195,11 +195,17 @@ class Settings(BaseSettings):
     )
 
     # ── Secrets ──────────────────────────────────────────────────────────────
-    jwt_secret_key: Optional[str] = Field(
+    secret_key: str = Field(
+        default="dev-secret-key-local-testing-only-change-in-production",
+        description="Application secret key for session signing. "
+                    "Must be 32+ characters and must NOT start with 'dev-' in production. "
+                    "Generate: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+    )
+    jwt_secret: Optional[str] = Field(
         default=None,
-        description="JWT secret key for signing authentication tokens. "
-                    "Generate: python -c \"import secrets; print(secrets.token_urlsafe(32))\" "
-                    "REQUIRED in production; weak defaults (dev-) are rejected."
+        description="JWT secret for signing authentication tokens. "
+                    "Must be 32+ characters. Required in production. "
+                    "Generate: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
     )
     jwt_expiry_seconds: int = Field(
         default=900,
@@ -212,6 +218,12 @@ class Settings(BaseSettings):
         gt=0,
         le=365,
         description="Refresh token expiry (days, default 7 days)"
+    )
+
+    # ── CORS ─────────────────────────────────────────────────────────────────
+    allowed_origins: list[str] = Field(
+        default=["http://localhost:3000", "http://localhost:8000"],
+        description="CORS allowed origins. Never use ['*'] in production."
     )
 
     # ── Observability ────────────────────────────────────────────────────────
@@ -246,12 +258,16 @@ class Settings(BaseSettings):
     @field_validator("database_url", mode="after")
     @classmethod
     def validate_database_url(cls, v: Optional[str], info) -> Optional[str]:
-        """Ensure DATABASE_URL is set explicitly (no production default)."""
+        """Require DATABASE_URL in production; allow None in development/staging."""
+        environment = info.data.get("environment", "development")
         if not v:
-            raise ValueError(
-                "DATABASE_URL is required. Set explicitly in .env or deployment platform. "
-                "Format: postgresql+asyncpg://user:password@host:port/db"
-            )
+            if environment == "production":
+                raise ValueError(
+                    "database_url must be set explicitly in production. "
+                    "Format: postgresql+asyncpg://user:password@host:port/db"
+                )
+            # development / staging: database_url is optional
+            return None
         if not v.startswith("postgresql+asyncpg://"):
             raise ValueError(
                 "DATABASE_URL must use asyncpg driver: postgresql+asyncpg://... "
@@ -280,40 +296,64 @@ class Settings(BaseSettings):
             )
         return v
 
-    @field_validator("jwt_secret_key", mode="after")
+    @field_validator("secret_key", mode="after")
     @classmethod
-    def validate_jwt_secret_key(cls, v: Optional[str], info) -> Optional[str]:
-        """Reject weak JWT secrets in production."""
+    def validate_secret_key(cls, v: str, info) -> str:
+        """Reject weak or short secret_key in staging/production."""
+        environment = info.data.get("environment", "development")
+        if environment in ("staging", "production"):
+            if len(v) < 32:
+                raise ValueError(
+                    "secret_key must be 32+ characters in production/staging"
+                )
+            if v.startswith("dev-"):
+                raise ValueError(
+                    "secret_key must NOT start with 'dev-' in production. "
+                    "Generate: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+                )
+        return v
+
+    @field_validator("jwt_secret", mode="after")
+    @classmethod
+    def validate_jwt_secret(cls, v: Optional[str], info) -> Optional[str]:
+        """Require jwt_secret in production; reject weak values in staging/production."""
         environment = info.data.get("environment", "development")
         if not v:
             if environment == "production":
+                raise ValueError("jwt_secret is required in production.")
+            logger.warning("jwt_secret not set; JWT authentication disabled in development")
+            return v
+        if environment in ("staging", "production"):
+            if len(v) < 32:
                 raise ValueError(
-                    "JWT_SECRET_KEY is required in production. "
+                    "jwt_secret must be 32+ characters in production/staging"
+                )
+            if v.startswith("dev-"):
+                raise ValueError(
+                    "jwt_secret must NOT start with 'dev-' in production. "
                     "Generate: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
                 )
-            logger.warning("JWT_SECRET_KEY not set; using insecure default for development only")
-            return "dev-insecure-key-change-in-production"
-        
-        if v.startswith("dev-") and environment == "production":
+        return v
+
+    @field_validator("allowed_origins", mode="after")
+    @classmethod
+    def validate_allowed_origins(cls, v: list[str], info) -> list[str]:
+        """Reject wildcard CORS origins in production."""
+        environment = info.data.get("environment", "development")
+        if environment == "production" and "*" in v:
             raise ValueError(
-                "JWT_SECRET_KEY has weak 'dev-' prefix in production environment. "
-                "Generate strong random key: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
-            )
-        
-        if len(v) < 32 and environment in ("staging", "production"):
-            raise ValueError(
-                f"JWT_SECRET_KEY must be ≥32 characters in {environment} (got {len(v)}). "
-                "Generate: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+                "allowed_origins must NOT contain '*' in production. "
+                "Use explicit origins."
             )
         return v
 
     @field_validator("debug", mode="after")
     @classmethod
     def validate_debug(cls, v: bool, info) -> bool:
-        """Reject debug=true in production."""
+        """Reject debug=True in production."""
         environment = info.data.get("environment", "development")
         if v and environment == "production":
-            raise ValueError("DEBUG must be false in production (security risk)")
+            raise ValueError("debug must be False in production environment")
         return v
 
     @field_validator("email_provider", mode="after")
