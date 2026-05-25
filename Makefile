@@ -62,4 +62,3 @@ test:
 	docker-compose exec backend pytest -v --cov=backend --cov-report=term-missing
 
 .DEFAULT_GOAL := help
----
