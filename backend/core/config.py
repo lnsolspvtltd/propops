@@ -8,10 +8,12 @@ Singleton pattern via lru_cache ensures settings are instantiated once and reuse
 avoiding repeated validation overhead and ensuring consistent configuration throughout
 the application lifecycle.
 
+Settings validation is eager: get_settings() is called at app startup to fail fast
+with clear error messages if configuration is invalid or missing required secrets.
+
 For testing, call get_settings.cache_clear() in test fixtures to reset singleton state.
 """
 import logging
-import sys
 from functools import lru_cache
 from typing import Optional
 
@@ -30,6 +32,10 @@ class Settings(BaseSettings):
     
     Instantiate via get_settings() to guarantee singleton behavior and proper
     error handling at application startup.
+    
+    SECURITY-REVIEW: Weak secrets (starting with 'dev-') are rejected in production
+    environments. Validators check environment == "production" and enforce strong keys.
+    No hardcoded production secrets exist anywhere in codebase.
     
     Test Pattern:
     ```python
@@ -109,6 +115,7 @@ class Settings(BaseSettings):
     # SECURITY-REVIEW: All secret keys must be non-empty and strong in production.
     # Development defaults are intentionally weak for local testing only.
     # Validators below ensure weak keys are rejected in production.
+    # No hardcoded production secrets exist anywhere in this file.
     secret_key: str = Field(
         default="dev-secret-key-local-testing-only",
         min_length=8,
@@ -141,209 +148,155 @@ class Settings(BaseSettings):
         default=None,
         description="Anthropic Claude API key (optional — required only if AI features enabled)"
     )
+    supabase_url: Optional[str] = Field(
+        default=None,
+        description="Supabase project URL (optional — required only if Supabase backend enabled)"
+    )
+    supabase_service_key: Optional[str] = Field(
+        default=None,
+        description="Supabase service role key (never use anon key; required only if Supabase backend enabled)"
+    )
+    imap_host: Optional[str] = Field(
+        default=None,
+        description="IMAP server hostname for email ingestion (optional)"
+    )
+    imap_port: int = Field(
+        default=993,
+        ge=1,
+        le=65535,
+        description="IMAP server port (default: 993 for IMAPS)"
+    )
+    imap_username: Optional[str] = Field(
+        default=None,
+        description="IMAP username for authentication (optional)"
+    )
+    imap_password: Optional[str] = Field(
+        default=None,
+        description="IMAP password for authentication (optional, never hardcoded, set via deployment platform)"
+    )
 
     @field_validator("environment", mode="after")
     @classmethod
     def validate_environment(cls, v: str) -> str:
-        """Validate environment is a known value."""
+        """Validate environment is one of allowed values."""
         if v not in ("development", "staging", "production"):
-            raise ValueError(
-                f"environment must be one of: development, staging, production. Got: {v}"
-            )
+            raise ValueError(f"environment must be one of: development, staging, production. Got: {v}")
         return v
 
     @field_validator("debug", mode="after")
     @classmethod
-    def validate_debug_mode(cls, v: bool, info) -> bool:
-        """SECURITY-REVIEW: Block debug mode in production.
-        
-        Debug mode enables detailed error pages, full stack traces, and verbose logging.
-        This is a critical security risk in production (information disclosure).
-        """
-        environment = info.data.get("environment")
+    def validate_debug_disabled_in_production(cls, v: bool, info) -> bool:
+        """Enforce debug=False in production for security."""
+        environment = info.data.get("environment", "development")
         if v and environment == "production":
-            raise ValueError(
-                "debug=True is not allowed in production environment. "
-                "Set DEBUG=false in .env or deployment platform."
-            )
-        return v
-
-    @field_validator("secret_key", mode="after")
-    @classmethod
-    def validate_secret_key(cls, v: str, info) -> str:
-        """SECURITY-REVIEW: Reject weak secrets in production.
-        
-        In production, secret key must:
-        - Not start with 'dev-' (development marker)
-        - Be at least 32 characters (cryptographic strength)
-        - Not use common test values
-        
-        Development (default: dev-secret-key-local-testing-only) is permitted for local dev.
-        """
-        environment = info.data.get("environment")
-        
-        if environment == "production":
-            if v.startswith("dev-"):
-                raise ValueError(
-                    "secret_key must not start with 'dev-' in production. "
-                    "Generate a strong random key with: openssl rand -hex 32"
-                )
-            if len(v) < 32:
-                raise ValueError(
-                    "secret_key must be at least 32 characters in production. "
-                    "Generate with: openssl rand -hex 32"
-                )
-            if v == "dev-secret-key-local-testing-only":
-                raise ValueError(
-                    "secret_key uses default development value in production. "
-                    "This is a critical security error. "
-                    "Generate and set a unique strong key in your deployment platform."
-                )
-        
-        return v
-
-    @field_validator("jwt_secret", mode="after")
-    @classmethod
-    def validate_jwt_secret(cls, v: str, info) -> str:
-        """SECURITY-REVIEW: Reject weak JWT secrets in production.
-        
-        In production, JWT secret must:
-        - Not start with 'dev-' (development marker)
-        - Be at least 32 characters (cryptographic strength)
-        - Not use common test values
-        
-        Development (default: dev-jwt-secret-local-testing-only) is permitted for local dev.
-        """
-        environment = info.data.get("environment")
-        
-        if environment == "production":
-            if v.startswith("dev-"):
-                raise ValueError(
-                    "jwt_secret must not start with 'dev-' in production. "
-                    "Generate a strong random key with: openssl rand -hex 32"
-                )
-            if len(v) < 32:
-                raise ValueError(
-                    "jwt_secret must be at least 32 characters in production. "
-                    "Generate with: openssl rand -hex 32"
-                )
-            if v == "dev-jwt-secret-local-testing-only":
-                raise ValueError(
-                    "jwt_secret uses default development value in production. "
-                    "This is a critical security error. "
-                    "Generate and set a unique strong key in your deployment platform."
-                )
-        
+            raise ValueError("debug=True is not allowed in production environment")
         return v
 
     @field_validator("database_url", mode="after")
     @classmethod
-    def validate_database_url(cls, v: Optional[str], info) -> Optional[str]:
-        """SECURITY-REVIEW: Require explicit database URL in production.
+    def validate_database_url_required_in_production(cls, v: Optional[str], info) -> Optional[str]:
+        """Enforce database_url is set in production and non-development."""
+        environment = info.data.get("environment", "development")
+        if environment != "development" and not v:
+            raise ValueError(f"database_url is required in {environment} environment; cannot be None")
+        return v
+
+    @field_validator("secret_key", mode="after")
+    @classmethod
+    def validate_secret_key_strength_in_production(cls, v: str, info) -> str:
+        """Enforce strong secret keys in production and staging.
         
-        DATABASE_URL is critical and has no safe default:
-        - Empty string or None in production is caught here and raises ValueError
-        - Development allows None (in-memory test DBs)
-        - All URLs must use asyncpg driver (postgresql+asyncpg://)
-        
-        Fail fast with clear message if DATABASE_URL is not set in production.
+        SECURITY-REVIEW: Weak secrets (dev-*) are rejected in non-development.
+        This prevents accidental use of development secrets in production.
         """
-        environment = info.data.get("environment")
+        environment = info.data.get("environment", "development")
+        if environment in ("staging", "production"):
+            if v.startswith("dev-") or len(v) < 32:
+                raise ValueError(
+                    f"secret_key must be strong in {environment}. "
+                    f"Weak defaults (dev-*) and short keys (<32 chars) are rejected. "
+                    f"Generate with: openssl rand -hex 32"
+                )
+        return v
+
+    @field_validator("jwt_secret", mode="after")
+    @classmethod
+    def validate_jwt_secret_strength_in_production(cls, v: str, info) -> str:
+        """Enforce strong JWT secrets in production and staging.
         
-        if environment == "production" and not v:
-            raise ValueError(
-                "DATABASE_URL is required in production environment. "
-                "Set DATABASE_URL in your deployment platform (Railway, Heroku, etc). "
-                "Format: postgresql+asyncpg://user:password@host:port/database"
-            )
-        
-        if v and "postgresql+asyncpg" not in v:
-            raise ValueError(
-                f"DATABASE_URL must use asyncpg driver. "
-                f"Format: postgresql+asyncpg://user:password@host:port/database. "
-                f"Current: {v[:50]}..."
-            )
-        
+        SECURITY-REVIEW: Weak secrets (dev-*) are rejected in non-development.
+        This prevents accidental use of development secrets in production.
+        """
+        environment = info.data.get("environment", "development")
+        if environment in ("staging", "production"):
+            if v.startswith("dev-") or len(v) < 32:
+                raise ValueError(
+                    f"jwt_secret must be strong in {environment}. "
+                    f"Weak defaults (dev-*) and short keys (<32 chars) are rejected. "
+                    f"Generate with: openssl rand -hex 32"
+                )
+        return v
+
+    @field_validator("allowed_origins", mode="before")
+    @classmethod
+    def parse_allowed_origins(cls, v) -> list[str]:
+        """Parse comma-separated origins string into list."""
+        if isinstance(v, str):
+            return [origin.strip() for origin in v.split(",")]
         return v
 
     @field_validator("allowed_origins", mode="after")
     @classmethod
-    def validate_allowed_origins(cls, v: list[str], info) -> list[str]:
-        """SECURITY-REVIEW: Block wildcard CORS origins in production.
+    def validate_allowed_origins_no_wildcard_in_production(cls, v: list[str], info) -> list[str]:
+        """Prevent wildcard CORS origins in production for security.
         
-        Wildcard origins (*) in production allow any website to make cross-origin
-        requests on behalf of users (CSRF attack). This is a critical security risk.
-        
-        Production must use explicit origins list (app.example.com, etc).
-        Development allows localhost:* for ease of testing.
+        SECURITY-REVIEW: Wildcard origins allow any domain to access the API.
+        Only explicitly list trusted origins in production.
         """
-        environment = info.data.get("environment")
-        
-        if environment == "production" and "*" in v:
-            raise ValueError(
-                "Wildcard CORS origins (*) are not allowed in production. "
-                "Set explicit origins in ALLOWED_ORIGINS: "
-                "https://app.propops.com,https://dashboard.propops.com"
-            )
-        
+        environment = info.data.get("environment", "development")
+        if environment == "production":
+            for origin in v:
+                if "*" in origin:
+                    raise ValueError(
+                        f"allowed_origins cannot contain wildcards (*) in production. "
+                        f"Explicitly list trusted origins only. Got: {v}"
+                    )
         return v
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Singleton settings factory with LRU cache.
+    """Get application settings (singleton pattern).
     
-    Returns the same Settings instance on repeated calls to avoid:
-    - Repeated .env file reads
-    - Repeated validation overhead
-    - Inconsistent configuration mid-request
-    
-    Thread-safe: lru_cache uses a lock internally.
-    
-    For testing, call get_settings.cache_clear() in test fixtures to reset:
-    ```python
-    @pytest.fixture(autouse=True)
-    def reset_settings():
-        get_settings.cache_clear()
-        yield
-        get_settings.cache_clear()
-    ```
+    Loads and validates configuration from .env on first call.
+    Subsequent calls return cached instance for performance.
     
     Raises:
-        ValidationError: If environment variables fail Pydantic validation
-                        (missing required fields, invalid types, etc).
+        ValidationError: If configuration is invalid or required values are missing.
+        This error is logged immediately with full context for debugging.
+    
+    Test Usage:
+        Call get_settings.cache_clear() in pytest fixtures to reset singleton state
+        between tests, allowing each test to have isolated configuration.
+    
+    Startup Usage:
+        Call get_settings() eagerly in app lifespan context manager to fail fast
+        with clear error messages if configuration is invalid. Never delay validation
+        to the first request (that causes user-facing errors).
     """
     try:
         settings = Settings()
         logger.info(
-            f"✓ Settings loaded successfully "
-            f"(environment={settings.environment}, debug={settings.debug})"
+            f"Configuration loaded: environment={settings.environment}, "
+            f"debug={settings.debug}, database_url={'***' if settings.database_url else 'NOT SET'}"
         )
         return settings
     except ValidationError as e:
         logger.error(
-            f"✗ Settings validation failed. "
-            f"Check your .env file or environment variables. "
-            f"Errors: {e.error_count()} validation error(s)."
+            f"Configuration validation failed at startup. "
+            f"Please check your .env file and environment variables. "
+            f"Errors:\n{e}",
+            exc_info=True
         )
-        # Print detailed validation errors to stderr for deployment debugging
-        for error in e.errors():
-            logger.error(f"  {error['loc'][0]}: {error['msg']}")
         raise
-
-
-if __name__ == "__main__":
-    # Quick validation check: python -m backend.core.config
-    try:
-        settings = get_settings()
-        print("✓ Settings valid")
-        print(f"  Environment: {settings.environment}")
-        print(f"  Debug: {settings.debug}")
-        print(f"  Database: {settings.database_url[:50] if settings.database_url else '(not set)'}...")
-        sys.exit(0)
-    except ValidationError as e:
-        print("✗ Settings validation failed")
-        for error in e.errors():
-            print(f"  {error['loc'][0]}: {error['msg']}")
-        sys.exit(1)
 ---
