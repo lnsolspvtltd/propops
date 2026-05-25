@@ -462,6 +462,3 @@ async def stop_inbox_poller():
             logger.info("inbox_poller: task cancelled successfully")
         except Exception as e:
             logger.error(f"inbox_poller: error during shutdown: {e}")
-```
-
----
