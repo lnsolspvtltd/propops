@@ -1,6 +1,6 @@
 """Unit tests for email_sender service."""
 import pytest
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
@@ -45,7 +45,7 @@ def sample_draft(sample_incident):
         body="Thank you for reporting this issue.\nWe will investigate.",
         status="approved",
         approved_by="founder",
-        approved_at=datetime.utcnow(),
+        approved_at=datetime.now(timezone.utc),
     )
 
 
@@ -251,4 +251,3 @@ class TestSendApprovedDraft:
         assert log.channel == "email"
         assert log.recipient == sample_draft.recipient_email
         assert log.subject == sample_draft.subject
-</end>
