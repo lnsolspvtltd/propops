@@ -3,7 +3,7 @@
 Handles state transitions, validation, audit logging, and notifications.
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -86,11 +86,11 @@ async def transition_incident_status(
 
     # Update incident
     incident.status = new_status_upper
-    incident.updated_at = datetime.utcnow()
+    incident.updated_at = datetime.now(timezone.utc)
 
     # Set resolved_at if moving to RESOLVED
     if new_status_upper == IncidentStatus.RESOLVED.value:
-        incident.resolved_at = datetime.utcnow()
+        incident.resolved_at = datetime.now(timezone.utc)
 
     # Audit log entry
     audit_details = {
