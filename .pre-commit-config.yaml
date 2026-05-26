@@ -24,7 +24,7 @@ repos:
     hooks:
       # Ruff linter (Python code quality)
       - id: ruff
-        args: ["--fix", "--exit-zero"]
+        args: ["--fix"]
       # Ruff formatter (replaces black)
       - id: ruff-format
         args: ["--line-length=100"]
