@@ -8,11 +8,16 @@ import uuid
 from datetime import datetime, timezone
 from sqlalchemy import Column, String, Text, Float, DateTime, ForeignKey, Integer, Index
 from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.orm import relationship
-from backend.core.database import Base
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+class Base(DeclarativeBase):
+    """Declarative base for all ORM models."""
+    pass
 
 
 class Organization(Base):
+    """PM company organization."""
     __tablename__ = "organizations"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(255), nullable=False)
@@ -37,6 +42,7 @@ class Organization(Base):
 
 
 class Property(Base):
+    """Building/property managed by organization."""
     __tablename__ = "properties"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     org_id = Column(
@@ -67,6 +73,7 @@ class Property(Base):
 
 
 class Unit(Base):
+    """Tenant-linked unit with contact info."""
     __tablename__ = "units"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     property_id = Column(
@@ -96,6 +103,7 @@ class Unit(Base):
 
 
 class Incident(Base):
+    """Unified Operational Thread (UOTL) — core incident tracking."""
     __tablename__ = "incidents"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     org_id = Column(
@@ -140,6 +148,7 @@ class Incident(Base):
 
 
 class AIDraft(Base):
+    """AI-generated draft awaiting human approval."""
     __tablename__ = "ai_drafts"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     incident_id = Column(
@@ -168,6 +177,7 @@ class AIDraft(Base):
 
 
 class CommunicationLog(Base):
+    """All inbound/outbound messages linked to incident."""
     __tablename__ = "communication_logs"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     incident_id = Column(

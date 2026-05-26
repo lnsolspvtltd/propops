@@ -15,6 +15,8 @@ from typing import Optional, List
 from pydantic import Field, field_validator, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+logger = logging.getLogger(__name__)
+
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables.
@@ -161,6 +163,8 @@ def get_settings() -> Settings:
     """
     return Settings()
 
+    Reads from .env file at first call, validates all settings, and caches result.
+    Subsequent calls return cached instance.
 
 # Module-level singleton used by most modules.
 # New code should prefer get_settings() to enable easier testing.
