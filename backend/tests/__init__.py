@@ -1,1 +1,1 @@
-"""Backend tests package."""
+"""Tests package for PropOps backend."""

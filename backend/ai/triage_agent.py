@@ -141,81 +141,8 @@ def _fallback_triage(message: str, error: Exception) -> TriageResult:
     
     logger.info("Fallback triage — no emergency keywords found, defaulting to MEDIUM")
     return TriageResult(
-        category="maintenance",
-        urgency="MEDIUM",
-        title="Unclassified message (fallback)",
-        summary="System could not reach AI classifier. Treating as medium priority for manual review.",
-        sentiment="neutral",
-        unit_mentioned=None,
-        requires_vendor=False,
-        confidence=0.50,
-        tags=["fallback", "needs-review"]
+        category="general", urgency="MEDIUM",
+        title="Triage failed", summary="",
+        sentiment="neutral", confidence=0.0,
+        success=False, error="Max retries exceeded",
     )
-
-
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10)
-)
-async def classify_message(message: str) -> TriageResult:
-    """Classify an incoming property management message using Claude.
-    
-    Retries up to 3 times with exponential backoff on transient failures.
-    Falls back to keyword-based detection if all retries fail.
-    
-    Args:
-        message: The incoming message text to classify
-        
-    Returns:
-        TriageResult with category, urgency, summary, confidence, etc.
-        
-    Raises:
-        Does not raise — returns safe fallback on any error.
-    """
-    try:
-        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        
-        response = client.messages.create(
-            model="claude-3-5-haiku-20241022",
-            max_tokens=512,
-            system=TRIAGE_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": message}]
-        )
-        
-        raw_json = response.content[0].text.strip()
-        logger.debug(f"Raw LLM response: {raw_json[:200]}")
-        
-        # Remove markdown code blocks if present
-        if raw_json.startswith("```json"):
-            raw_json = raw_json[7:]
-        if raw_json.startswith("```"):
-            raw_json = raw_json[3:]
-        if raw_json.endswith("```"):
-            raw_json = raw_json[:-3]
-        
-        raw_json = raw_json.strip()
-        data = json.loads(raw_json)
-        result = TriageResult(**data)
-        
-        logger.info(
-            f"Classified message: category={result.category}, urgency={result.urgency}, confidence={result.confidence:.2f}",
-            extra={"category": result.category, "urgency": result.urgency, "confidence": result.confidence}
-        )
-        return result
-    
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON parse error in triage response: {e}\nRaw: {raw_json[:300]}")
-        return _fallback_triage(message, e)
-    
-    except ValueError as e:
-        logger.error(f"Pydantic validation error in triage: {e}")
-        return _fallback_triage(message, e)
-    
-    except anthropic.APIError as e:
-        logger.error(f"Anthropic API error: {e}", exc_info=True)
-        return _fallback_triage(message, e)
-    
-    except Exception as e:
-        logger.error(f"Unexpected error in classify_message: {e}", exc_info=True)
-        return _fallback_triage(message, e)
----

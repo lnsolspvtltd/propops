@@ -122,14 +122,8 @@ async def get_incident(
     logger.info(f"Retrieved incident {incident_id} with {len(drafts)} drafts")
     
     return {
-        "id": str(inc.id),
-        "title": inc.title,
-        "category": inc.category,
-        "urgency": inc.urgency,
-        "status": inc.status,
-        "summary": inc.ai_summary,
-        "source": inc.source_address,
-        "raw_message": inc.raw_message,
-        "created_at": inc.created_at.isoformat() if inc.created_at else "",
-        "drafts": drafts
+        "id": str(inc.id), "title": inc.title, "category": inc.category,
+        "urgency": inc.urgency, "status": inc.status, "summary": inc.ai_summary,
+        "source": inc.source_address, "raw_message": inc.raw_message,
+        "created_at": inc.created_at.isoformat() if inc.created_at else "", "drafts": drafts,
     }

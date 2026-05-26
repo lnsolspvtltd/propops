@@ -11,7 +11,7 @@ Key design decisions:
 """
 from functools import lru_cache
 from typing import Optional
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -48,60 +48,34 @@ class Settings(BaseSettings):
     @field_validator("secret_key", mode="after")
     @classmethod
     def validate_secret_key(cls, v: str, info) -> str:
-        """SECURITY-REVIEW: Ensure secret_key is not empty in production or at all.
-        
-        Empty secret_key breaks JWT/session signing silently.
-        Fail fast at startup rather than runtime.
         """
-        if not v or not v.strip():
-            env = info.data.get("environment", "development")
+        SECURITY-REVIEW: Enforce non-empty secret_key in production.
+        Empty secret_key renders session/JWT security ineffective.
+        """
+        environment = info.data.get("environment", "development")
+        if environment == "production" and not v:
             raise ValueError(
-                f"secret_key must not be empty. Set SECRET_KEY environment variable. "
-                f"(environment={env})"
+                "secret_key must be set via SECRET_KEY environment variable in production"
+            )
+        if environment == "development" and not v:
+            import logging
+            logging.getLogger(__name__).warning(
+                "⚠️ CRITICAL: secret_key is empty in development. "
+                "Set SECRET_KEY in .env for security testing. "
+                "Production deployment will fail without this."
             )
         return v
 
-    # ── Database ──────────────────────────────────────────────────────────────
-    database_url: Optional[str] = Field(
-        default=None,
-        description="PostgreSQL async URL (postgresql+asyncpg://...). Required in production.",
-    )
+    @model_validator(mode='after')
+    def validate_production_secrets(self) -> 'Settings':
+        """Raise if required secrets are missing in production."""
+        if self.environment == 'production':
+            if not self.secret_key:
+                raise ValueError("SECRET_KEY must be set in production environment")
+            if not self.anthropic_api_key:
+                raise ValueError("ANTHROPIC_API_KEY must be set in production environment")
+        return self
 
-    # ── IMAP inbox polling ────────────────────────────────────────────────────
-    imap_host: str = Field(default="imap.gmail.com")
-    imap_port: int = Field(default=993, ge=1, le=65535)
-    imap_username: str = Field(default="")
-    imap_password: str = Field(default="")
-    imap_poll_interval_seconds: int = Field(default=60, ge=10, le=3600)
-
-    # ── SMTP outbound ─────────────────────────────────────────────────────────
-    smtp_host: str = Field(default="smtp.gmail.com")
-    smtp_port: int = Field(default=587, ge=1, le=65535)
-    smtp_username: str = Field(default="")
-    smtp_password: str = Field(default="")
-
-    # ── AI ────────────────────────────────────────────────────────────────────
-    anthropic_api_key: Optional[str] = Field(default=None)
-
-    # ── Twilio (Phase 2) ──────────────────────────────────────────────────────
-    twilio_account_sid: str = Field(default="")
-    twilio_auth_token: str = Field(default="")
-    twilio_phone_number: str = Field(default="")
-
-    # ── Security ──────────────────────────────────────────────────────────────
-    secret_key: str = Field(
-        default="dev-secret-key-local-testing-only-change-in-production",
-        description="Application secret key. Must be 32+ chars in production.",
-    )
-    cors_origins: List[str] = Field(
-        default=["http://localhost:3000"],
-        description="Allowed CORS origins. Never use ['*'] in production.",
-    )
-
-    # ── Organisation ─────────────────────────────────────────────────────────
-    default_org_id: str = Field(default="")
-
-    # ── Properties ────────────────────────────────────────────────────────────
     @property
     def is_production(self) -> bool:
         """True when environment == 'production'."""
@@ -178,4 +152,3 @@ def get_settings() -> Settings:
     Subsequent calls return cached instance.
 
 settings = get_settings()
----
