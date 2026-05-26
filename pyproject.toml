@@ -1,0 +1,10 @@
+"""Project metadata and tool configuration for PropOps Backend."""
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "propops-backend"
+version = "0.1.0"
+description =
