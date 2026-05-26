@@ -1,14 +1,5 @@
-"""Application configuration via environment variables.
-
-Pydantic v2 Settings with full validation. All config loaded from .env at startup.
-
-Key design decisions:
-- get_settings() uses @lru_cache so Settings is instantiated once per process.
-  Call get_settings.cache_clear() in tests to reset between test cases.
-- All secrets are Optional at definition time; validators enforce requirements
-  in production so development can run without all secrets configured.
-- is_production property for environment-specific guards throughout the codebase.
-"""
+"""Application configuration from environment variables."""
+import logging
 from functools import lru_cache
 from typing import Optional
 from pydantic import field_validator, model_validator
@@ -41,7 +32,7 @@ class Settings(BaseSettings):
     # App
     environment: str = "development"
     log_level: str = "INFO"
-    secret_key: str = ""
+    secret_key: str = ""  # REQUIRED: set SECRET_KEY in environment
     cors_origins: list[str] = ["http://localhost:3000"]
     version: str = "0.1.0-alpha"
 
@@ -76,19 +67,31 @@ class Settings(BaseSettings):
                 raise ValueError("ANTHROPIC_API_KEY must be set in production environment")
         return self
 
+    # SECURITY-REVIEW: JWT config for auth tokens
+    jwt_algorithm: str = "HS256"
+    jwt_access_token_expire_minutes: int = 15
+    jwt_refresh_token_expire_days: int = 7
+
     @property
     def is_production(self) -> bool:
         """True when environment == 'production'."""
         return self.environment == "production"
 
-    # ── Validators ────────────────────────────────────────────────────────────
-    @field_validator("environment")
-    @classmethod
-    def validate_environment(cls, v: str) -> str:
-        allowed = {"development", "staging", "production"}
-        if v.lower() not in allowed:
-            raise ValueError(f"environment must be one of {allowed}")
-        return v.lower()
+    def validate_startup(self) -> None:
+        """Validate critical config on startup. Raises ValueError if invalid."""
+        # SECURITY-REVIEW: Enforce SECRET_KEY presence and strength
+        if not self.secret_key or len(self.secret_key) < 32:
+            raise ValueError(
+                "SECRET_KEY must be set in environment and >= 32 characters long. "
+                "Generate with: python -c 'import secrets; print(secrets.token_urlsafe(32))'"
+            )
+        
+        if self.is_production:
+            if not self.anthropic_api_key:
+                raise ValueError("ANTHROPIC_API_KEY is required in production")
+            if "localhost" in self.database_url:
+                raise ValueError("Cannot use localhost database URL in production")
+
 
     @field_validator("secret_key")
     @classmethod
@@ -139,16 +142,12 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Return the application settings singleton.
-
-    Uses lru_cache so Settings is only instantiated once per process.
-    Raises ValidationError at startup if any required setting is invalid.
-
-    For testing, call get_settings.cache_clear() between test cases.
-    """
-    return Settings()
+    settings = Settings()
+    settings.validate_startup()
+    return settings
 
     Reads from .env file at first call, validates all settings, and caches result.
     Subsequent calls return cached instance.
 
 settings = get_settings()
+
