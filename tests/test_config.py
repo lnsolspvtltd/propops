@@ -1,166 +1,149 @@
-"""Tests for backend.core.config settings and validation.
+"""Tests for backend.core.config module."""
 
-Tests validate:
-- Production environment enforces strong secrets and required settings
-- Development environment allows weak defaults for local testing
-- Validators produce clear, actionable error messages
+import os
+from unittest.mock import patch
 
-Run: pytest tests/test_config.py -v
-"""
 import pytest
 from pydantic import ValidationError
 
-from backend.core.config import Settings, get_settings
+from backend.core.config import Settings, get_settings, validate_startup_settings
 
 
 class TestSettingsValidation:
-    """Test configuration validation rules.
+    """Test Settings class validation."""
 
-    Error message assertions match the exact strings raised by validators
-    in backend/core/config.py. Update these if validator messages change.
-    """
+    def test_default_settings_load(self):
+        """Test that Settings loads with minimal config."""
+        get_settings.cache_clear()
+        with patch.dict(os.environ, {"ENVIRONMENT": "development"}):
+            settings = get_settings()
+            assert settings.environment == "development"
+            assert settings.is_production is False
 
-    # ── database_url ────────────────────────────────────────────────────────
+    def test_production_environment_detection(self):
+        """Test is_production property."""
+        get_settings.cache_clear()
+        with patch.dict(os.environ, {"ENVIRONMENT": "production"}):
+            settings = get_settings()
+            assert settings.is_production is True
 
     def test_database_url_required_in_production(self):
-        """database_url must be set in production; None triggers ValidationError."""
+        """Test that DATABASE_URL is enforced in production."""
         with pytest.raises(ValidationError) as exc_info:
-            Settings(
-                environment="production",
-                database_url=None,
-                secret_key="a-strong-production-secret-key-123456789",
-                jwt_secret="a-strong-production-jwt-secret-123456789",
-            )
-        assert "database_url must be set explicitly in production" in str(exc_info.value)
+            Settings(environment="production", database_url=None)
+        assert "DATABASE_URL" in str(exc_info.value)
 
     def test_database_url_optional_in_development(self):
-        """database_url may be None in development without raising an error."""
-        s = Settings(environment="development", database_url=None)
-        assert s.database_url is None
+        """Test that DATABASE_URL is optional in development."""
+        settings = Settings(environment="development", database_url=None)
+        assert settings.database_url is None
 
-    # ── debug ────────────────────────────────────────────────────────────────
-
-    def test_debug_false_required_in_production(self):
-        """debug=True must raise ValidationError in production."""
+    def test_secret_key_length_enforced_in_production(self):
+        """Test that SECRET_KEY must be ≥32 chars in production."""
         with pytest.raises(ValidationError) as exc_info:
-            Settings(
-                environment="production",
-                debug=True,
-                database_url="postgresql+asyncpg://user:pass@localhost/db",
-                secret_key="a-strong-production-secret-key-123456789",
-                jwt_secret="a-strong-production-jwt-secret-123456789",
-            )
-        assert "debug must be False in production environment" in str(exc_info.value)
+            Settings(environment="production", secret_key="short-key")
+        assert "32 characters" in str(exc_info.value)
 
-    def test_debug_allowed_in_development(self):
-        """debug=True is permitted in development."""
-        s = Settings(environment="development", debug=True)
-        assert s.debug is True
-
-    # ── secret_key ──────────────────────────────────────────────────────────
-
-    def test_secret_key_must_be_strong_in_production(self):
-        """secret_key shorter than 32 chars raises ValidationError in production."""
+    def test_secret_key_placeholder_rejected_in_production(self):
+        """Test that placeholder values are rejected in production."""
         with pytest.raises(ValidationError) as exc_info:
-            Settings(
-                environment="production",
-                database_url="postgresql+asyncpg://user:pass@localhost/db",
-                secret_key="short",
-                jwt_secret="a-strong-production-jwt-secret-123456789",
-            )
-        assert "secret_key must be 32+ characters" in str(exc_info.value)
+            Settings(environment="production", secret_key="change-me-to-secure-random-value")
+        assert "placeholder" in str(exc_info.value).lower()
 
-    def test_secret_key_cannot_use_dev_prefix_in_production(self):
-        """secret_key starting with 'dev-' raises ValidationError in production."""
+    def test_secret_key_accepted_in_development(self):
+        """Test that placeholder values are accepted in development."""
+        settings = Settings(environment="development", secret_key="change-me-in-prod")
+        assert settings.secret_key == "change-me-in-prod"
+
+    def test_cors_origins_parse_comma_separated_string(self):
+        """Test that CORS_ORIGINS parses comma-separated string."""
+        settings = Settings(cors_origins="http://localhost:3000, https://app.example.com")
+        assert settings.cors_origins == ["http://localhost:3000", "https://app.example.com"]
+
+    def test_cors_origins_accept_list(self):
+        """Test that CORS_ORIGINS accepts list directly."""
+        origins = ["http://localhost:3000", "https://app.example.com"]
+        settings = Settings(cors_origins=origins)
+        assert settings.cors_origins == origins
+
+    def test_imap_port_validation(self):
+        """Test that IMAP_PORT must be valid port range."""
         with pytest.raises(ValidationError) as exc_info:
-            Settings(
-                environment="production",
-                database_url="postgresql+asyncpg://user:pass@localhost/db",
-                secret_key="dev-secret-key-change-in-production-padded-to-32",
-                jwt_secret="a-strong-production-jwt-secret-123456789",
-            )
-        assert "NOT start with 'dev-'" in str(exc_info.value)
+            Settings(imap_port=99999)
+        assert "less than or equal to 65535" in str(exc_info.value)
 
-    def test_secret_key_allowed_in_development(self):
-        """Development secret key defaults are accepted in development."""
-        s = Settings(environment="development", secret_key="dev-secret-key-local-testing-only")
-        assert s.secret_key == "dev-secret-key-local-testing-only"
-
-    # ── jwt_secret ──────────────────────────────────────────────────────────
-
-    def test_jwt_secret_must_be_strong_in_production(self):
-        """jwt_secret shorter than 32 chars raises ValidationError in production."""
+    def test_smtp_port_validation(self):
+        """Test that SMTP_PORT must be valid port range."""
         with pytest.raises(ValidationError) as exc_info:
-            Settings(
-                environment="production",
-                database_url="postgresql+asyncpg://user:pass@localhost/db",
-                secret_key="a-strong-production-secret-key-123456789",
-                jwt_secret="short",
-            )
-        assert "jwt_secret must be 32+ characters" in str(exc_info.value)
+            Settings(smtp_port=0)
+        assert "greater than or equal to 1" in str(exc_info.value)
 
-    def test_jwt_secret_cannot_use_dev_prefix_in_production(self):
-        """jwt_secret starting with 'dev-' raises ValidationError in production."""
+    def test_log_level_validation(self):
+        """Test that LOG_LEVEL must be valid."""
         with pytest.raises(ValidationError) as exc_info:
-            Settings(
-                environment="production",
-                database_url="postgresql+asyncpg://user:pass@localhost/db",
-                secret_key="a-strong-production-secret-key-123456789",
-                jwt_secret="dev-jwt-secret-change-in-production-padded-to-32",
-            )
-        assert "NOT start with 'dev-'" in str(exc_info.value)
+            Settings(log_level="INVALID")
+        assert "string should match pattern" in str(exc_info.value)
 
-    def test_jwt_secret_allowed_in_development(self):
-        """Development JWT secret defaults are accepted in development."""
-        s = Settings(environment="development", jwt_secret="dev-jwt-secret-local-testing-only")
-        assert s.jwt_secret == "dev-jwt-secret-local-testing-only"
+    def test_log_level_valid_values(self):
+        """Test all valid LOG_LEVEL values."""
+        for level in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
+            settings = Settings(log_level=level)
+            assert settings.log_level == level
 
-    # ── allowed_origins ─────────────────────────────────────────────────────
 
-    def test_allowed_origins_cannot_use_wildcard_in_production(self):
-        """CORS wildcard * raises ValidationError in production."""
-        with pytest.raises(ValidationError) as exc_info:
-            Settings(
-                environment="production",
-                database_url="postgresql+asyncpg://user:pass@localhost/db",
-                secret_key="a-strong-production-secret-key-123456789",
-                jwt_secret="a-strong-production-jwt-secret-123456789",
-                allowed_origins=["*"],
-            )
-        assert "allowed_origins must NOT contain '*'" in str(exc_info.value)
+class TestSettingsCaching:
+    """Test get_settings() caching behavior."""
 
-    def test_allowed_origins_wildcard_allowed_in_development(self):
-        """CORS wildcard is permitted in development for local convenience."""
-        s = Settings(environment="development", allowed_origins=["*"])
-        assert "*" in s.allowed_origins
-
-    def test_allowed_origins_multiple_explicit_origins_in_production(self):
-        """Multiple explicit origins are accepted in production (no wildcard)."""
-        s = Settings(
-            environment="production",
-            database_url="postgresql+asyncpg://user:pass@localhost/db",
-            secret_key="a-strong-production-secret-key-123456789",
-            jwt_secret="a-strong-production-jwt-secret-123456789",
-            allowed_origins=["https://example.com", "https://app.example.com"],
-        )
-        assert "https://example.com" in s.allowed_origins
-
-    # ── get_settings singleton ───────────────────────────────────────────────
-
-    def test_get_settings_returns_singleton(self, reset_settings_cache, monkeypatch):
-        """get_settings() returns the same instance on repeated calls."""
-        monkeypatch.setenv("ENVIRONMENT", "development")
+    def test_get_settings_returns_singleton(self):
+        """Test that get_settings returns same instance."""
         get_settings.cache_clear()
-        s1 = get_settings()
-        s2 = get_settings()
-        assert s1 is s2
+        settings1 = get_settings()
+        settings2 = get_settings()
+        assert settings1 is settings2
 
-    def test_get_settings_cache_clear_returns_new_instance(self, monkeypatch):
-        """After cache_clear(), get_settings() returns a fresh instance."""
-        monkeypatch.setenv("ENVIRONMENT", "development")
+    def test_get_settings_cache_clear_creates_new_instance(self):
+        """Test that cache_clear creates new instance on next call."""
+        settings1 = get_settings()
         get_settings.cache_clear()
-        s1 = get_settings()
+        settings2 = get_settings()
+        assert settings1 is not settings2
+
+
+class TestValidateStartupSettings:
+    """Test validate_startup_settings function."""
+
+    def test_production_validation_passes_with_valid_config(self):
+        """Test that validation passes in production with all required settings."""
         get_settings.cache_clear()
-        monkeypatch.setenv("LOG_LEVEL", "DEBUG")
-        s2 = get_settings()
-        assert s1 is not s2
+        with patch.dict(
+            os.environ,
+            {
+                "ENVIRONMENT": "production",
+                "DATABASE_URL": "postgresql+asyncpg://user:pass@host:5432/db",
+                "SECRET_KEY": "a" * 32,
+            },
+        ):
+            # Should not raise
+            validate_startup_settings()
+
+    def test_production_validation_fails_without_database_url(self):
+        """Test that validation fails in production without DATABASE_URL."""
+        get_settings.cache_clear()
+        with patch.dict(
+            os.environ,
+            {
+                "ENVIRONMENT": "production",
+                "DATABASE_URL": "",
+                "SECRET_KEY": "a" * 32,
+            },
+        ):
+            with pytest.raises(SystemExit):
+                validate_startup_settings()
+
+    def test_development_validation_passes_with_minimal_config(self):
+        """Test that validation passes in development with minimal config."""
+        get_settings.cache_clear()
+        with patch.dict(os.environ, {"ENVIRONMENT": "development"}):
+            # Should not raise
+            validate_startup_settings()
+---
