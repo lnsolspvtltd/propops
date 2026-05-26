@@ -401,4 +401,3 @@ def get_poller_health() -> dict:
         "fatal_errors_count": len(FATAL_ERRORS),
         "recent_fatal_errors": FATAL_ERRORS[-5:],  # Last 5
     }
----
