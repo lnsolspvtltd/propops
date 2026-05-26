@@ -1,29 +1,44 @@
 """Incidents API routes."""
 import uuid
+import logging
 from typing import Optional
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from backend.core.database import get_db
 from backend.models.incident import Incident, AIDraft
+from backend.services.incident_state_service import (
+    transition_incident_status,
+    get_incident_history,
+    StateTransitionError,
+)
+from backend.core.state_machine import get_valid_transitions, IncidentStatus, validate_transition
+from backend.api.auth import get_current_user, require_role, User
+
+logger = logging.getLogger(__name__)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
 class IncidentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
     id: str
     title: str
     category: str
     urgency: str
     status: str
-    ai_summary: Optional[str]
-    source_address: Optional[str]
+    ai_summary: Optional[str] = None
+    ai_confidence: Optional[float] = None
+    source_address: Optional[str] = None
+    unit_id: Optional[str] = None
+    property_id: Optional[str] = None
     created_at: str
     draft_count: int = 0
-
-    class Config:
-        from_attributes = True
 
 
 @router.get("/", response_model=list[IncidentResponse])
@@ -31,36 +46,50 @@ async def list_incidents(
     status: Optional[str] = Query(None),
     urgency: Optional[str] = Query(None),
     limit: int = Query(50, le=200),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List incidents with optional filtering."""
+    """List incidents with optional filtering. Requires authentication."""
+    logger.info(f"User {user.email} listing incidents (status={status}, urgency={urgency})")
+    
     query = select(Incident).order_by(desc(Incident.created_at)).limit(limit)
     if status:
-        query = query.where(Incident.status == status)
+        query = query.where(Incident.status == status.upper())
     if urgency:
-        query = query.where(Incident.urgency == urgency)
+        query = query.where(Incident.urgency == urgency.upper())
+    
     result = await db.execute(query)
     incidents = result.scalars().all()
+    logger.info(f"Retrieved {len(incidents)} incidents (status={status}, urgency={urgency})")
 
     out = []
     for inc in incidents:
         draft_count_q = await db.execute(
-            select(AIDraft).where(AIDraft.incident_id == inc.id, AIDraft.status == "pending")
+            select(AIDraft).where(AIDraft.incident_id == inc.id, AIDraft.status == "PENDING_REVIEW")
         )
+        draft_count = len(draft_count_q.scalars().all())
+        
         out.append(IncidentResponse(
-            id=str(inc.id), title=inc.title, category=inc.category or "",
-            urgency=inc.urgency or "MEDIUM", status=inc.status or "OPEN",
+            id=str(inc.id),
+            title=inc.title,
+            category=inc.category or "",
+            urgency=inc.urgency or "MEDIUM",
+            status=inc.status or "OPEN",
             ai_summary=inc.ai_summary,
+            ai_confidence=inc.ai_confidence,
             source_address=inc.source_address,
+            unit_id=str(inc.unit_id) if inc.unit_id else None,
+            property_id=str(inc.property_id) if inc.property_id else None,
             created_at=inc.created_at.isoformat() if inc.created_at else "",
             draft_count=len(draft_count_q.scalars().all()),
         ))
+    
     return out
 
 
 @router.get("/{incident_id}")
 async def get_incident(incident_id: str, db: AsyncSession = Depends(get_db)):
-    """Get a single incident with all drafts."""
+    """Get a single incident with all drafts and context."""
     result = await db.execute(select(Incident).where(Incident.id == uuid.UUID(incident_id)))
     inc = result.scalar_one_or_none()
     if not inc:
