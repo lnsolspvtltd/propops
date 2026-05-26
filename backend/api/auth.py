@@ -47,7 +47,7 @@ def create_access_token(user_id: str, email: str, role: str = "user") -> str:
         "exp": expires,
     }
     token = jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
-    logger.info(f"Created access token for {email} with role {role}")
+    logger.debug(f"Created access token for user_id={user_id}")
     return token
 
 
