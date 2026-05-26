@@ -1,0 +1,75 @@
+# Pre-commit hooks for PropOps
+# Install: pip install pre-commit && pre-commit install
+# Run:     pre-commit run --all-files
+# Run on specific stage: pre-commit run --hook-stage=commit --all-files
+
+repos:
+  # Standard pre-commit hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-json
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: check-merge-conflict
+      - id: debug-statements
+
+  # Ruff — linting and formatting (unified formatter + linter)
+  # Using ruff as both formatter and linter avoids conflicts with black.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.2
+    hooks:
+      # Ruff linter (Python code quality)
+      - id: ruff
+        args: ["--fix"]
+      # Ruff formatter (replaces black)
+      - id: ruff-format
+        args: ["--line-length=100"]
+
+  # Type checking with mypy (strict mode)
+  # Enforces type annotations across the codebase.
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.8.0
+    hooks:
+      - id: mypy
+        additional_dependencies:
+          [
+            "pydantic>=2.0",
+            "pydantic-settings",
+            "sqlalchemy>=2.0",
+            "fastapi",
+            "httpx",
+            "anthropic",
+          ]
+        args:
+          [
+            "--strict",
+            "--warn-unused-configs",
+            "--warn-redundant-casts",
+            "--disallow-any-generics",
+          ]
+        stages: [commit]
+
+  # YAML linting
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.35.1
+    hooks:
+      - id: yamllint
+        args: [--strict, --config-data, "{extends: relaxed}"]
+
+# Global exclusions (applies to all repos)
+exclude: |
+  (?x)^(
+    venv/|
+    .venv/|
+    build/|
+    dist/|
+    \.eggs/|
+    migrations/|
+    \.pytest_cache/|
+    \.mypy_cache/
+  )
+---

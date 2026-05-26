@@ -43,6 +43,7 @@ class Unit(Base):
 
 
 class Incident(Base):
+    """Core incident/thread model."""
     __tablename__ = "incidents"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     org_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
@@ -73,6 +74,7 @@ class Incident(Base):
 
 
 class AIDraft(Base):
+    """AI-generated draft response awaiting approval."""
     __tablename__ = "ai_drafts"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     incident_id = Column(UUID(as_uuid=True), ForeignKey("incidents.id"), nullable=False)
@@ -85,6 +87,9 @@ class AIDraft(Base):
     status = Column(String(50), default="pending", index=True)
     approved_by = Column(String(255))
     approved_at = Column(DateTime(timezone=True))
+    rejected_by = Column(String(255))
+    rejection_reason = Column(Text)
+    rejected_at = Column(DateTime(timezone=True))
     sent_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     incident = relationship("Incident", back_populates="drafts")

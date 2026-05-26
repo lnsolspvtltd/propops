@@ -19,6 +19,7 @@ class ApproveRequest(BaseModel):
 
 
 class RejectRequest(BaseModel):
+    """Request to reject a draft."""
     reason: str = ""
 
 

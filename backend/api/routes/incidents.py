@@ -19,6 +19,8 @@ from backend.api.auth import get_current_user, require_role, User
 
 logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 
@@ -100,11 +102,12 @@ async def list_incidents(
     
     result = await db.execute(query)
     incidents = result.scalars().all()
+    logger.info(f"Retrieved {len(incidents)} incidents (status={status}, urgency={urgency})")
 
     out = []
     for inc in incidents:
         draft_count_q = await db.execute(
-            select(AIDraft).where(AIDraft.incident_id == inc.id, AIDraft.status == "pending")
+            select(AIDraft).where(AIDraft.incident_id == inc.id, AIDraft.status == "PENDING_REVIEW")
         )
         draft_count = len(draft_count_q.scalars().all())
         
