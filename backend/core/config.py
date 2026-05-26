@@ -42,8 +42,6 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.environment == "production"
 
-
-
     @model_validator(mode='after')
     def validate_production_secrets(self) -> 'Settings':
         """Raise at startup if production secrets are missing."""
