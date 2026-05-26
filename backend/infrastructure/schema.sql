@@ -1,15 +1,6 @@
--- PropOps PostgreSQL Schema — Phase 1: Inbox Triage Wedge
---
--- REFERENCE ONLY: This file is for documentation and local development.
--- CANONICAL SOURCE: backend/alembic/versions/001_initial_phase1_schema.py
---
--- In production, ALL schema changes must go through Alembic migrations.
--- Running raw SQL against this file will cause drift. Use:
---   alembic upgrade head
---
--- Created: 2025
--- DB: PostgreSQL 14+
--- Note: Uses gen_random_uuid() (requires pgcrypto extension)
+-- PropOps PostgreSQL Schema
+-- Phase 1: Inbox Triage Wedge
+-- This file is executed by Docker on first postgres startup via /docker-entrypoint-initdb.d/
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
@@ -68,7 +59,6 @@ CREATE TABLE IF NOT EXISTS units (
 );
 
 CREATE INDEX IF NOT EXISTS idx_units_property ON units(property_id);
-CREATE INDEX IF NOT EXISTS idx_units_email ON units(tenant_email);
 
 -- ── Incidents (unified operational thread) ───────────────────────────────────
 CREATE TABLE IF NOT EXISTS incidents (
@@ -170,3 +160,43 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     details         JSONB,
     created_at      TIMESTAMPTZ DEFAULT NOW()
 );
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_org ON audit_logs(org_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_incident ON audit_logs(incident_id);
+
+-- ── Seed data: Test organization ─────────────────────────────────────────────
+INSERT INTO organizations (id, name, email_domain, plan, unit_count)
+VALUES (
+    '00000000-0000-0000-0000-000000000001'::uuid,
+    'Test Property Management',
+    'testpm.local',
+    'beta',
+    10
+)
+ON CONFLICT DO NOTHING;
+
+-- Test property
+INSERT INTO properties (id, org_id, name, address, city, province, postal_code, unit_count)
+VALUES (
+    '00000000-0000-0000-0000-000000000002'::uuid,
+    '00000000-0000-0000-0000-000000000001'::uuid,
+    'Downtown Apartments',
+    '123 Main St',
+    'Toronto',
+    'ON',
+    'M1A 1A1',
+    10
+)
+ON CONFLICT DO NOTHING;
+
+-- Test unit
+INSERT INTO units (id, property_id, unit_number, tenant_name, tenant_email, tenant_phone)
+VALUES (
+    '00000000-0000-0000-0000-000000000003'::uuid,
+    '00000000-0000-0000-0000-000000000002'::uuid,
+    '101',
+    'John Smith',
+    'john.smith@example.com',
+    '416-555-0100'
+)
+ON CONFLICT DO NOTHING;

@@ -2,10 +2,8 @@
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
-
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from pydantic import BaseModel, ConfigDict
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -166,50 +164,11 @@ async def approve_draft(
     if not draft:
         logger.warning(f"Draft not found: {draft_id}")
         raise HTTPException(status_code=404, detail="Draft not found")
-    
-    # Verify status is pending
-    if draft.status != "pending":
-        logger.warning(
-            f"Cannot approve draft {draft_id}: status is '{draft.status}', expected 'pending'"
-        )
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "invalid_status",
-                "message": f"Draft status is '{draft.status}', expected 'pending'",
-                "current_status": draft.status
-            }
-        )
-    
-    # Mark as approved
-    try:
-        draft.status = "approved"
-        draft.approved_by = req.approved_by
-        draft.approved_at = datetime.now(timezone.utc)
-        await db.commit()
-        logger.info(f"Draft {draft_id} marked as approved")
-    except Exception as e:
-        await db.rollback()
-        logger.error(f"Error saving draft approval: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to save approval — see server logs"
-        )
-    
-    # Queue email send as background task
-    background_tasks.add_task(
-        send_approved_draft,
-        db,
-        draft_id,
-        req.approved_by
-    )
-    logger.info(f"Queued email send for draft {draft_id}")
-    
-    return {
-        "status": "approved",
-        "draft_id": draft_id,
-        "message": "Draft approved. Email will be sent shortly. Check communication_logs for status."
-    }
+    draft.status = "approved"
+    draft.approved_by = req.approved_by
+    draft.approved_at = datetime.now(timezone.utc)
+    await db.commit()
+    return {"status": "approved", "draft_id": draft_id}
 
 
 @router.post("/{draft_id}/reject")
@@ -271,40 +230,6 @@ async def reject_draft(
     if not draft:
         logger.warning(f"Draft not found: {draft_id}")
         raise HTTPException(status_code=404, detail="Draft not found")
-    
-    # Verify status is pending
-    if draft.status != "pending":
-        logger.warning(
-            f"Cannot reject draft {draft_id}: status is '{draft.status}', expected 'pending'"
-        )
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "invalid_status",
-                "message": f"Draft status is '{draft.status}', expected 'pending'",
-                "current_status": draft.status
-            }
-        )
-    
-    # Mark as rejected
-    try:
-        draft.status = "rejected"
-        draft.rejected_by = current_user.get("id")
-        draft.rejection_reason = req.reason
-        draft.rejected_at = datetime.now(timezone.utc)
-        await db.commit()
-        logger.info(f"Draft {draft_id} marked as rejected")
-    except Exception as e:
-        await db.rollback()
-        logger.error(f"Error saving draft rejection: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to save rejection — see server logs"
-        )
-    
-    return {
-        "status": "rejected",
-        "draft_id": draft_id,
-        "message": "Draft rejected. Not sent."
-    }
----
+    draft.status = "rejected"
+    await db.commit()
+    return {"status": "rejected", "draft_id": draft_id}

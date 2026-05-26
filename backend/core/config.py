@@ -104,6 +104,20 @@ class Settings(BaseSettings):
                 raise ValueError('ANTHROPIC_API_KEY must be set in production.')
         return self
 
+
+    @model_validator(mode='after')
+    def validate_production_secrets(self) -> 'Settings':
+        """Raise at startup if production secrets are missing."""
+        if self.environment == 'production':
+            if not self.secret_key:
+                raise ValueError(
+                    'SECRET_KEY must be set in production. '
+                    'Generate with: openssl rand -hex 32'
+                )
+            if not self.anthropic_api_key:
+                raise ValueError('ANTHROPIC_API_KEY must be set in production.')
+        return self
+
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
