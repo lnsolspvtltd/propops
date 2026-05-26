@@ -9,16 +9,11 @@ Key design decisions:
   in production so development can run without all secrets configured.
 - is_production property for environment-specific guards throughout the codebase.
 """
-
-import logging
-import sys
 from functools import lru_cache
-from typing import List, Optional
+from typing import Optional, List
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -81,137 +76,92 @@ class Settings(BaseSettings):
     twilio_phone_number: str = Field(default="")
 
     # ── Security ──────────────────────────────────────────────────────────────
-    # SECURITY-REVIEW: SECRET_KEY validation enforces production safety
     secret_key: str = Field(
-        default="dev-secret-key-local-testing-only",
-        description=(
-            "Cryptographic key for signing sessions and tokens. "
-            "Must be ≥32 characters in production. "
-            "Generate with: openssl rand -hex 32"
-        ),
+        default="dev-secret-key-local-testing-only-change-in-production",
+        description="Application secret key. Must be 32+ chars in production.",
     )
-
-    # ── CORS & HTTP ───────────────────────────────────────────────────────────
     cors_origins: List[str] = Field(
         default=["http://localhost:3000"],
-        description=(
-            "Comma-separated or list of allowed CORS origins. "
-            "Examples: ['http://localhost:3000'] (dev), "
-            "['https://app.propops.io', 'https://www.propops.io'] (prod)"
-        ),
+        description="Allowed CORS origins. Never use ['*'] in production.",
     )
 
-    # ── Organization ──────────────────────────────────────────────────────────
-    default_org_id: Optional[str] = Field(
-        default=None,
-        description=(
-            "UUID of default organization for email polling. "
-            "In multi-tenant setup, should be per-org; for now defaults to first org."
-        ),
-    )
+    # ── Organisation ─────────────────────────────────────────────────────────
+    default_org_id: str = Field(default="")
 
-    # ── Computed Properties ───────────────────────────────────────────────────
+    # ── Properties ────────────────────────────────────────────────────────────
     @property
     def is_production(self) -> bool:
-        """True if running in production environment."""
-        return self.environment.lower() == "production"
+        """True when environment == 'production'."""
+        return self.environment == "production"
 
     # ── Validators ────────────────────────────────────────────────────────────
-    @field_validator("database_url")
+    @field_validator("environment")
     @classmethod
-    def validate_database_url(cls, v: Optional[str], info) -> Optional[str]:
-        """Enforce DATABASE_URL in production."""
-        environment = info.data.get("environment", "").lower()
-        if environment == "production" and not v:
-            raise ValueError(
-                "DATABASE_URL is required in production. "
-                "Set DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/db"
-            )
-        return v
+    def validate_environment(cls, v: str) -> str:
+        allowed = {"development", "staging", "production"}
+        if v.lower() not in allowed:
+            raise ValueError(f"environment must be one of {allowed}")
+        return v.lower()
 
     @field_validator("secret_key")
     @classmethod
     def validate_secret_key(cls, v: str, info) -> str:
-        """Enforce SECRET_KEY strength in production."""
-        environment = info.data.get("environment", "").lower()
-        if environment == "production":
-            if len(v) < 32:
+        """Reject weak secrets in production."""
+        data = info.data
+        if data.get("environment") == "production":
+            if len(v) < 32 or v.startswith("dev-"):
                 raise ValueError(
-                    f"SECRET_KEY must be ≥32 characters in production (got {len(v)}). "
-                    f"Generate with: openssl rand -hex 32"
-                )
-            if v == "dev-secret-key-local-testing-only" or v.startswith("change-me"):
-                raise ValueError(
-                    "SECRET_KEY is a placeholder value. "
-                    "Generate a random key: openssl rand -hex 32"
+                    "secret_key must be 32+ characters and NOT start with 'dev-' "
+                    "in production. Generate with: openssl rand -hex 32"
                 )
         return v
 
-    @field_validator("anthropic_api_key")
+    @field_validator("database_url")
     @classmethod
-    def validate_anthropic_api_key(cls, v: Optional[str], info) -> Optional[str]:
-        """Warn if Anthropic API key missing in production."""
-        environment = info.data.get("environment", "").lower()
-        if environment == "production" and not v:
-            logger.warning(
-                "ANTHROPIC_API_KEY not set in production. "
-                "AI features (incident triage) will be unavailable."
+    def validate_database_url(cls, v: Optional[str], info) -> Optional[str]:
+        """database_url is required in production."""
+        data = info.data
+        if data.get("environment") == "production" and not v:
+            raise ValueError(
+                "database_url must be set explicitly in production. "
+                "No default is provided."
             )
         return v
 
-    @field_validator("cors_origins", mode="before")
+    @field_validator("cors_origins")
     @classmethod
-    def parse_cors_origins(cls, v) -> List[str]:
-        """Parse comma-separated CORS_ORIGINS string or accept list."""
-        if isinstance(v, str):
-            return [origin.strip() for origin in v.split(",")]
-        return v if isinstance(v, list) else []
+    def validate_cors_origins(cls, v: List[str], info) -> List[str]:
+        """Block wildcard CORS in production."""
+        data = info.data
+        if data.get("environment") == "production" and "*" in v:
+            raise ValueError(
+                "cors_origins must NOT contain '*' in production. "
+                "Use explicit origins."
+            )
+        return v
+
+    @field_validator("debug")
+    @classmethod
+    def validate_debug(cls, v: bool, info) -> bool:
+        """debug=True is not allowed in production."""
+        data = info.data
+        if data.get("environment") == "production" and v:
+            raise ValueError("debug must be False in production environment")
+        return v
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Get cached Settings instance.
+    """Return the application settings singleton.
 
-    Returns:
-        Settings singleton (cached per process).
+    Uses lru_cache so Settings is only instantiated once per process.
+    Raises ValidationError at startup if any required setting is invalid.
 
-    Raises:
-        ValidationError: If any required setting is invalid.
-
-    Examples:
-        >>> settings = get_settings()
-        >>> print(settings.database_url)
-
-        >>> # In tests, reset the cache:
-        >>> get_settings.cache_clear()
-        >>> settings = get_settings()  # Fresh instance
+    For testing, call get_settings.cache_clear() between test cases.
     """
     return Settings()
 
 
-def validate_startup_settings() -> None:
-    """Validate all critical settings on startup.
-
-    Raises:
-        SystemExit: If any critical setting is invalid in production.
-    """
-    settings = get_settings()
-
-    if settings.is_production:
-        errors = []
-
-        if not settings.database_url:
-            errors.append("DATABASE_URL is required in production")
-
-        if len(settings.secret_key) < 32:
-            errors.append("SECRET_KEY must be ≥32 characters in production")
-
-        if errors:
-            logger.critical(
-                "Configuration validation failed in production:\n"
-                + "\n".join(f"  - {e}" for e in errors)
-            )
-            sys.exit(1)
-
-        logger.info("Production settings validated successfully")
----
+# Module-level singleton used by most modules.
+# New code should prefer get_settings() to enable easier testing.
+settings = get_settings()
