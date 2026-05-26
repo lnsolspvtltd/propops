@@ -98,8 +98,8 @@ async def get_incident(incident_id: str, db: AsyncSession = Depends(get_db)):
     drafts = [{"id": str(d.id), "subject": d.subject, "body": d.body, "status": d.status}
               for d in drafts_q.scalars().all()]
     return {
-        "id": str(inc.id),
-        "title": inc.title,
-        "category": inc.category,
-        "urgency": inc.urgency,
-        "status": inc.status,
+        "id": str(inc.id), "title": inc.title, "category": inc.category,
+        "urgency": inc.urgency, "status": inc.status, "summary": inc.ai_summary,
+        "source": inc.source_address, "raw_message": inc.raw_message,
+        "created_at": inc.created_at.isoformat() if inc.created_at else "", "drafts": drafts,
+    }

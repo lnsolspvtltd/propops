@@ -31,17 +31,20 @@ Draft Reply Generated
       ↓
 Property Manager Approves (1 click)
       ↓
+SMTP Send (Auto)
+      ↓
 Vendor Outreach (Phase 2)
 ```
 
 ## Phase 1 MVP — Inbox Triage Wedge
 
-- [ ] Inbox ingestion (IMAP/Gmail/Outlook)
-- [ ] AI classification + urgency scoring
-- [ ] Draft reply generation
-- [ ] Human approval queue (web UI)
-- [ ] Incident state machine (OPEN → RESOLVED)
-- [ ] Audit log
+- [x] Inbox ingestion (IMAP/Gmail/Outlook)
+- [x] AI classification + urgency scoring
+- [x] Draft reply generation
+- [x] Human approval queue (web UI)
+- [x] **Email sending via SMTP** ← NEW
+- [x] Incident state machine (OPEN → RESOLVED)
+- [x] Audit log
 
 ## Tech Stack
 
@@ -49,7 +52,7 @@ Vendor Outreach (Phase 2)
 - **Frontend**: Next.js + Tailwind + shadcn/ui
 - **Database**: PostgreSQL (Supabase)
 - **AI**: Claude Haiku (triage) + Claude Sonnet (drafting)
-- **Email**: IMAP + Gmail API + Outlook API
+- **Email**: IMAP + Gmail API + Outlook API + SMTP
 - **Deploy**: Vercel (frontend) + Railway (backend)
 
 ## ICP
@@ -63,14 +66,14 @@ Property management companies:
 ## Pricing
 
 - Beta: Free
-- Paid: \–2/unit/month
+- Paid: $2/unit/month
 - Later: hybrid base + workflow usage
 
 ## Getting Started
 
 ```bash
 cp .env.example .env
-# fill in your values
+# fill in your SMTP credentials (Gmail App Password recommended)
 
 # Backend
 cd backend && pip install -r requirements.txt
@@ -80,5 +83,12 @@ uvicorn main:app --reload --port 8000
 cd frontend && npm install && npm run dev
 ```
 
+### Setting up Gmail SMTP
+
+1. Enable 2-Step Verification on your Google account
+2. Generate an App Password: https://myaccount.google.com/apppasswords
+3. Use the 16-character password in `SMTP_PASSWORD`
+
 ---
 *Built by ANVIL · Managed by NEXUS · Reviewed by FORGE · LN Sols Pvt Ltd*
+---

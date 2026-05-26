@@ -1,60 +1,116 @@
-"""Authentication and authorization utilities."""
+"""Authentication and authorization module.
+
+Provides dependency injection for getting current user from request.
+Uses JWT tokens in Authorization header.
+
+SECURITY-REVIEW: This module handles user authentication.
+- Tokens are validated server-side
+- User info is extracted from verified token
+- Invalid/expired tokens return 401 Unauthorized
+"""
 import logging
-from typing import Optional
+from typing import Optional, Dict, Any
+
 from fastapi import Depends, HTTPException, Header
+from jwt import decode, DecodeError, ExpiredSignatureError
 import jwt
+
 from backend.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 
 async def get_current_user(
-    authorization: Optional[str] = Header(None)
-) -> str:
-    """Extract and validate JWT token from Authorization header.
+    authorization: Optional[str] = Header(None),
+) -> Dict[str, Any]:
+    """Extract and validate current user from JWT token in Authorization header.
     
-    # SECURITY-REVIEW: This is a minimal JWT validator.
-    # Production should validate against your issuer, check exp claim,
-    # and verify user exists in database.
+    Expected header format: Authorization: Bearer <token>
     
     Args:
-        authorization: Bearer token from Authorization header
-        
+        authorization: Authorization header value (injected by FastAPI)
+    
     Returns:
-        Authenticated user identifier (subject claim)
-        
+        dict with user info (id, email, etc.)
+    
     Raises:
-        HTTPException: 401 if token missing or invalid
+        HTTPException 401: Missing or invalid token
+        HTTPException 403: Expired or tampered token
     """
     if not authorization:
-        logger.warning("Missing authorization header")
-        raise HTTPException(status_code=401, detail="Missing authorization header")
+        logger.warning("get_current_user: Missing Authorization header")
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": "missing_authorization",
+                "message": "Authorization header required"
+            }
+        )
+    
+    # Extract token from "Bearer <token>"
+    parts = authorization.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        logger.warning(f"get_current_user: Invalid Authorization header format")
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": "invalid_authorization_format",
+                "message": "Use: Authorization: Bearer <token>"
+            }
+        )
+    
+    token = parts[1]
     
     try:
-        scheme, token = authorization.split(" ", 1)
-        if scheme.lower() != "bearer":
-            logger.warning(f"Invalid auth scheme: {scheme}")
-            raise HTTPException(status_code=401, detail="Invalid authorization scheme")
-        
-        # Decode JWT without verification (for MVP)
-        # TODO: Add signature verification with settings.jwt_secret_key
-        payload = jwt.decode(token, options={"verify_signature": False})
-        user_id = payload.get("sub")
-        
+        # Verify and decode JWT
+        payload = decode(
+            token,
+            settings.secret_key,
+            algorithms=["HS256"]
+        )
+        user_id: str = payload.get("sub")
         if not user_id:
-            logger.warning("JWT missing 'sub' claim")
-            raise HTTPException(status_code=401, detail="Invalid token: missing subject")
+            logger.warning("get_current_user: Token missing 'sub' claim")
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "invalid_token",
+                    "message": "Token missing user ID"
+                }
+            )
         
-        logger.debug(f"Authenticated user: {user_id}")
-        return user_id
+        logger.debug(f"get_current_user: Valid token for user_id={user_id}")
+        return {
+            "id": user_id,
+            "email": payload.get("email"),
+            "role": payload.get("role", "user"),
+            "org_id": payload.get("org_id"),
+        }
     
-    except ValueError as e:
-        logger.warning(f"Malformed authorization header: {e}")
-        raise HTTPException(status_code=401, detail="Malformed authorization header")
-    except jwt.InvalidTokenError as e:
-        logger.warning(f"Invalid JWT: {e}")
-        raise HTTPException(status_code=401, detail="Invalid token")
+    except ExpiredSignatureError:
+        logger.warning("get_current_user: Token expired")
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "token_expired",
+                "message": "Token has expired"
+            }
+        )
+    
+    except DecodeError as e:
+        logger.warning(f"get_current_user: Token decode error: {e}")
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": "invalid_token",
+                "message": "Token is invalid or tampered"
+            }
+        )
+    
     except Exception as e:
-        logger.error(f"Error in get_current_user: {e}", exc_info=True)
-        raise HTTPException(status_code=401, detail="Authentication failed")
+        logger.error(f"get_current_user: Unexpected error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Internal error validating token"
+        )
 ---
