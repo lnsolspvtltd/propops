@@ -27,20 +27,20 @@ logger = logging.getLogger(__name__)
 
 class Settings(BaseSettings):
     """Application settings from environment.
-    
+
     Pydantic v2 config using BaseSettings for automatic .env loading.
     All fields use Field() with validation to ensure type safety and sane defaults.
     Secrets validation ensures weak defaults are not used in production.
-    
+
     Instantiate via get_settings() to guarantee singleton behavior and proper
     error handling at application startup.
-    
+
     SECURITY-REVIEW: Weak secrets (starting with 'dev-') are rejected in production
     environments. Validators check environment == "production" and enforce strong keys.
     No hardcoded production secrets exist anywhere in codebase.
     All sensitive fields (database_url, anthropic_api_key) are validated to reject
     empty strings and must be explicitly provided.
-    
+
     Test Pattern:
     ```python
     @pytest.fixture(autouse=True)
@@ -110,7 +110,21 @@ class Settings(BaseSettings):
         description="Anthropic API key for Claude LLM access. "
                     "Required in production; optional in development."
     )
-    
+
+    # ── Security ──────────────────────────────────────────────────────────────
+    secret_key: str = Field(
+        default="dev-secret-key-local-testing-only-change-in-production",
+        description="Application secret key. Must be 32+ chars in production/staging.",
+    )
+    jwt_secret: Optional[str] = Field(
+        default=None,
+        description="JWT signing secret. Defaults to secret_key if not set.",
+    )
+    allowed_origins: list[str] = Field(
+        default=["http://localhost:3000", "http://localhost:8000"],
+        description="Allowed CORS origins.",
+    )
+
     # ── API Configuration ────────────────────────────────────────────────────
     api_title: str = Field(
         default="PropOps API",
@@ -190,14 +204,32 @@ class Settings(BaseSettings):
                     "config: database_url does not use asyncpg driver; "
                     "FastAPI requires async DB driver. Expected: postgresql+asyncpg://..."
                 )
-        
-        # Require database_url in production
+
+        # Require database_url in production only
         if info.data.get("environment") == "production" and not v:
             raise ValueError(
                 "database_url is required in production. "
                 "Set DATABASE_URL environment variable via deployment platform."
             )
-        
+
+        return v
+
+    @field_validator("secret_key", mode="after")
+    @classmethod
+    def validate_secret_key(cls, v: str, info) -> str:
+        """Reject weak secret keys in production and staging."""
+        env = info.data.get("environment", "development")
+        if env in ("production", "staging"):
+            if len(v) < 32:
+                raise ValueError(
+                    f"secret_key must be at least 32 characters in {env}. "
+                    "Generate with: python -c \"import secrets; print(secrets.token_hex(32))\""
+                )
+            if v.startswith("dev-"):
+                raise ValueError(
+                    f"secret_key must not start with 'dev-' in {env}. "
+                    "Use a cryptographically strong random key."
+                )
         return v
 
     @field_validator("anthropic_api_key")
@@ -207,7 +239,7 @@ class Settings(BaseSettings):
         if v is not None:
             if v.strip() == "":
                 raise ValueError("anthropic_api_key must not be empty string; use None or remove from .env")
-            
+
             # SECURITY-REVIEW: Reject weak secrets in production
             if info.data.get("environment") == "production":
                 if v.startswith("dev-") or v.startswith("sk-"):
@@ -215,7 +247,7 @@ class Settings(BaseSettings):
                         "anthropic_api_key in production must not start with 'dev-' or 'sk-'. "
                         "Use a real production API key from Anthropic console."
                     )
-        
+
         return v
 
     @field_validator("cors_origins", mode="before")
@@ -254,15 +286,15 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     """Get application settings (singleton via lru_cache).
-    
+
     Reads from .env file at first call, validates all settings, and caches result.
     Subsequent calls return cached instance.
-    
+
     Raises:
         ValidationError: If any setting is invalid or required settings are missing.
-    
+
     For testing: call get_settings.cache_clear() to reset singleton state between tests.
-    
+
     Returns:
         Settings: Immutable, validated settings instance.
     """
@@ -278,4 +310,3 @@ def get_settings() -> Settings:
         for error in e.errors():
             logger.error("  - %s: %s", error["loc"][0], error["msg"])
         raise
----
