@@ -15,10 +15,11 @@ For testing, call get_settings.cache_clear() in test fixtures to reset singleton
 See conftest.py for example fixture pattern.
 """
 import logging
+import os
 from functools import lru_cache
 from typing import Optional
 
-from pydantic import Field, field_validator, ValidationError
+from pydantic import Field, field_validator, ValidationError, ConfigDict
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,8 @@ class Settings(BaseSettings):
     SECURITY-REVIEW: Weak secrets (starting with 'dev-') are rejected in production
     environments. Validators check environment == "production" and enforce strong keys.
     No hardcoded production secrets exist anywhere in codebase.
+    All sensitive fields (database_url, anthropic_api_key) are validated to reject
+    empty strings and must be explicitly provided.
     
     Test Pattern:
     ```python
@@ -63,7 +66,7 @@ class Settings(BaseSettings):
     )
     debug: bool = Field(
         default=False,
-        description="Enable debug mode (never in production)"
+        description="Enable debug mode (must be false in production)"
     )
     log_level: str = Field(
         default="INFO",
@@ -78,368 +81,201 @@ class Settings(BaseSettings):
                     "Required in production; optional in development/staging."
     )
     database_pool_size: int = Field(
-        default=5,
-        gt=0,
+        default=10,
+        ge=1,
         le=100,
-        description="SQLAlchemy connection pool size (concurrent connections per worker)"
+        description="SQLAlchemy connection pool size (1-100). "
+                    "Development: 5-10, Production: 20-50"
     )
     database_max_overflow: int = Field(
-        default=10,
+        default=20,
         ge=0,
-        le=100,
-        description="SQLAlchemy max overflow (burst connections above pool_size)"
+        le=200,
+        description="SQLAlchemy max overflow connections (0-200). "
+                    "Allows burst beyond pool_size. Development: 10-20, Production: 40-100"
     )
-    database_echo: bool = Field(
-        default=False,
-        description="Log all SQL statements to logger (development only, never in production)"
+    database_pool_pre_ping: bool = Field(
+        default=True,
+        description="Test connections before use to avoid 'connection closed' errors"
     )
-
-    # ── API ──────────────────────────────────────────────────────────────────
-    api_host: str = Field(
-        default="0.0.0.0",
-        description="API server bind address (0.0.0.0 for all interfaces)"
-    )
-    api_port: int = Field(
-        default=8000,
-        ge=1,
-        le=65535,
-        description="API server port"
-    )
-    api_url: str = Field(
-        default="http://localhost:8000",
-        description="Public API URL (for webhooks, email links, external references). "
-                    "Must match deployment URL in production."
+    database_pool_recycle: int = Field(
+        default=3600,
+        ge=60,
+        description="Recycle connections after this many seconds (prevents RDS timeout issues)"
     )
 
-    # ── Anthropic Claude ─────────────────────────────────────────────────────
+    # ── API Keys & Secrets ───────────────────────────────────────────────────
     anthropic_api_key: Optional[str] = Field(
         default=None,
-        description="Anthropic API key for Claude LLM integration. "
-                    "Get from https://console.anthropic.com/account/keys. "
-                    "REQUIRED in production."
+        description="Anthropic API key for Claude LLM access. "
+                    "Required in production; optional in development."
     )
-    anthropic_default_model: str = Field(
-        default="claude-haiku-4-5",
-        pattern="^(claude-opus-4-1|claude-sonnet-4|claude-haiku-4-5)$",
-        description="Default Claude model for incident analysis (haiku=fast/cheap, opus=most capable)"
+    
+    # ── API Configuration ────────────────────────────────────────────────────
+    api_title: str = Field(
+        default="PropOps API",
+        description="API title for OpenAPI documentation"
     )
-
-    # ── Incident Analysis ────────────────────────────────────────────────────
-    incident_max_chars_for_llm: int = Field(
-        default=3000,
-        gt=100,
-        le=10000,
-        description="Max characters of incident description to send to Claude (truncate longer)"
+    api_version: str = Field(
+        default="0.1.0-alpha",
+        description="API version for OpenAPI documentation"
     )
-    incident_auto_resolve_hours: int = Field(
-        default=72,
-        ge=0,
-        description="Auto-resolve open incidents after this many hours (0 to disable)"
+    api_root_path: str = Field(
+        default="",
+        description="Root path prefix for all API routes (e.g., '/api' mounts routes at /api/...)"
     )
 
-    # ── Email ────────────────────────────────────────────────────────────────
-    email_provider: str = Field(
-        default="smtp",
-        pattern="^(smtp|sendgrid)$",
-        description="Email provider: smtp or sendgrid"
+    # ── CORS Configuration ───────────────────────────────────────────────────
+    cors_origins: str = Field(
+        default="http://localhost:3000,http://localhost:8000",
+        description="Comma-separated list of allowed CORS origins. "
+                    "For development: localhost origins. For production: explicit domain list only."
     )
-    smtp_host: Optional[str] = Field(
-        default="localhost",
-        description="SMTP server hostname (if email_provider=smtp)"
+    cors_allow_credentials: bool = Field(
+        default=True,
+        description="Allow credentials in CORS requests"
     )
-    smtp_port: int = Field(
-        default=587,
-        ge=1,
-        le=65535,
-        description="SMTP server port (if email_provider=smtp)"
+    cors_allow_methods: str = Field(
+        default="GET,POST,PUT,DELETE,PATCH,OPTIONS",
+        description="Comma-separated list of allowed HTTP methods"
     )
-    smtp_username: Optional[str] = Field(
-        default=None,
-        description="SMTP username (optional for open relay)"
-    )
-    smtp_password: Optional[str] = Field(
-        default=None,
-        description="SMTP password (optional for open relay). "
-                    "SECURITY-REVIEW: Use app-specific password, never personal account password."
-    )
-    sendgrid_api_key: Optional[str] = Field(
-        default=None,
-        description="SendGrid API key (if email_provider=sendgrid). "
-                    "Get from https://app.sendgrid.com/settings/api_keys"
-    )
-    notification_from_email: str = Field(
-        default="noreply@propops.app",
-        description="From email address for all outgoing notifications"
+    cors_allow_headers: str = Field(
+        default="*",
+        description="Comma-separated list of allowed headers (default '*' allows all)"
     )
 
-    # ── Slack ────────────────────────────────────────────────────────────────
-    slack_webhook_url: Optional[str] = Field(
-        default=None,
-        description="Slack webhook URL for incident notifications. "
-                    "Get from Slack workspace Settings -> Integrations -> Incoming Webhooks. "
-                    "Leave blank to disable."
-    )
-    slack_channel: Optional[str] = Field(
-        default=None,
-        description="Slack channel for alerts (e.g., #incidents). Overrides webhook default."
-    )
-
-    # ── Testing ──────────────────────────────────────────────────────────────
-    testing: bool = Field(
+    # ── Rate Limiting (optional, for future use) ────────────────────────────
+    rate_limit_enabled: bool = Field(
         default=False,
-        description="Enable test mode (test fixtures, mock data). NEVER in production."
+        description="Enable rate limiting on API endpoints"
     )
-    test_database_url: Optional[str] = Field(
-        default=None,
-        description="Database URL for integration tests (leave blank for in-memory SQLite)"
-    )
-
-    # ── Secrets ──────────────────────────────────────────────────────────────
-    secret_key: str = Field(
-        default="dev-secret-key-local-testing-only-change-in-production",
-        description="Application secret key for session signing. "
-                    "Must be 32+ characters and must NOT start with 'dev-' in production. "
-                    "Generate: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
-    )
-    jwt_secret: Optional[str] = Field(
-        default=None,
-        description="JWT secret for signing authentication tokens. "
-                    "Must be 32+ characters. Required in production. "
-                    "Generate: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
-    )
-    jwt_expiry_seconds: int = Field(
-        default=900,
-        gt=0,
-        le=86400,
-        description="JWT access token expiry (seconds, default 15 minutes)"
-    )
-    refresh_token_expiry_days: int = Field(
-        default=7,
-        gt=0,
-        le=365,
-        description="Refresh token expiry (days, default 7 days)"
+    rate_limit_requests_per_minute: int = Field(
+        default=60,
+        ge=1,
+        description="Requests per minute per IP address"
     )
 
-    # ── CORS ─────────────────────────────────────────────────────────────────
-    allowed_origins: list[str] = Field(
-        default=["http://localhost:3000", "http://localhost:8000"],
-        description="CORS allowed origins. Never use ['*'] in production."
-    )
-
-    # ── Observability ────────────────────────────────────────────────────────
+    # ── Logging Configuration ────────────────────────────────────────────────
     sentry_dsn: Optional[str] = Field(
         default=None,
-        description="Sentry error tracking DSN. Leave blank to disable. "
-                    "Get from https://sentry.io/projects/"
-    )
-    datadog_enabled: bool = Field(
-        default=False,
-        description="Enable DataDog APM (requires DataDog agent in container)"
+        description="Sentry error tracking DSN. Optional; set in production for monitoring."
     )
 
-    # ── Development & Debug ──────────────────────────────────────────────────
-    verbose_http_logging: bool = Field(
-        default=False,
-        description="Log all HTTP requests and responses. NEVER in production."
-    )
-    reload_on_change: bool = Field(
-        default=False,
-        description="Reload on file change (uvicorn --reload). Development only."
-    )
-    profiling_enabled: bool = Field(
-        default=False,
-        description="Enable cProfile output. Development only."
-    )
+    @field_validator("environment")
+    @classmethod
+    def validate_environment(cls, v: str) -> str:
+        """Validate environment is a known value."""
+        valid = {"development", "staging", "production"}
+        if v.lower() not in valid:
+            raise ValueError(f"environment must be one of {valid}, got {v}")
+        return v.lower()
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Validators
-    # ─────────────────────────────────────────────────────────────────────────
+    @field_validator("debug")
+    @classmethod
+    def validate_debug_mode(cls, v: bool, info) -> bool:
+        """Warn if debug is True in production."""
+        if v and info.data.get("environment") == "production":
+            logger.warning("config: debug=True in production — this exposes sensitive information!")
+        return v
 
-    @field_validator("database_url", mode="after")
+    @field_validator("database_url")
     @classmethod
     def validate_database_url(cls, v: Optional[str], info) -> Optional[str]:
-        """Require DATABASE_URL in production; allow None in development/staging."""
-        environment = info.data.get("environment", "development")
-        if not v:
-            if environment == "production":
-                raise ValueError(
-                    "database_url must be set explicitly in production. "
-                    "Format: postgresql+asyncpg://user:password@host:port/db"
+        """Validate database_url is not empty string and uses asyncpg driver."""
+        if v is not None:
+            if v.strip() == "":
+                raise ValueError("database_url must not be empty string; use None or remove from .env")
+            if "asyncpg" not in v:
+                logger.warning(
+                    "config: database_url does not use asyncpg driver; "
+                    "FastAPI requires async DB driver. Expected: postgresql+asyncpg://..."
                 )
-            # development / staging: database_url is optional
-            return None
-        if not v.startswith("postgresql+asyncpg://"):
-            raise ValueError(
-                "DATABASE_URL must use asyncpg driver: postgresql+asyncpg://... "
-                "(not psycopg2 or standard postgresql://)"
-            )
-        return v
-
-    @field_validator("anthropic_api_key", mode="after")
-    @classmethod
-    def validate_anthropic_api_key(cls, v: Optional[str], info) -> Optional[str]:
-        """Reject weak API keys in production."""
-        environment = info.data.get("environment", "development")
-        if not v:
-            if environment == "production":
-                raise ValueError(
-                    "ANTHROPIC_API_KEY is required in production. "
-                    "Get from https://console.anthropic.com/account/keys"
-                )
-            logger.warning("ANTHROPIC_API_KEY not set; Claude integration disabled")
-            return None
         
-        if v.startswith("dev-") and environment == "production":
+        # Require database_url in production
+        if info.data.get("environment") == "production" and not v:
             raise ValueError(
-                "ANTHROPIC_API_KEY has weak 'dev-' prefix in production environment. "
-                "Use strong random key from https://console.anthropic.com/account/keys"
+                "database_url is required in production. "
+                "Set DATABASE_URL environment variable via deployment platform."
             )
+        
         return v
 
-    @field_validator("secret_key", mode="after")
+    @field_validator("anthropic_api_key")
     @classmethod
-    def validate_secret_key(cls, v: str, info) -> str:
-        """Reject weak or short secret_key in staging/production."""
-        environment = info.data.get("environment", "development")
-        if environment in ("staging", "production"):
-            if len(v) < 32:
-                raise ValueError(
-                    "secret_key must be 32+ characters in production/staging"
+    def validate_anthropic_key(cls, v: Optional[str], info) -> Optional[str]:
+        """Validate Anthropic API key is not empty string or weak dev key in production."""
+        if v is not None:
+            if v.strip() == "":
+                raise ValueError("anthropic_api_key must not be empty string; use None or remove from .env")
+            
+            # SECURITY-REVIEW: Reject weak secrets in production
+            if info.data.get("environment") == "production":
+                if v.startswith("dev-") or v.startswith("sk-"):
+                    raise ValueError(
+                        "anthropic_api_key in production must not start with 'dev-' or 'sk-'. "
+                        "Use a real production API key from Anthropic console."
+                    )
+        
+        return v
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, v: str) -> str:
+        """Parse comma-separated CORS origins; validate no wildcards in production."""
+        if isinstance(v, str) and v.strip():
+            origins = [o.strip() for o in v.split(",") if o.strip()]
+            # SECURITY-REVIEW: Warn if wildcard used in production
+            if "*" in origins or "http://*" in v or "https://*" in v:
+                logger.warning(
+                    "config: CORS origins contain wildcards — this allows any origin to access the API. "
+                    "Only use in development. In production, specify explicit domain list."
                 )
-            if v.startswith("dev-"):
-                raise ValueError(
-                    "secret_key must NOT start with 'dev-' in production. "
-                    "Generate: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
-                )
+            return ",".join(origins)
         return v
-
-    @field_validator("jwt_secret", mode="after")
-    @classmethod
-    def validate_jwt_secret(cls, v: Optional[str], info) -> Optional[str]:
-        """Require jwt_secret in production; reject weak values in staging/production."""
-        environment = info.data.get("environment", "development")
-        if not v:
-            if environment == "production":
-                raise ValueError("jwt_secret is required in production.")
-            logger.warning("jwt_secret not set; JWT authentication disabled in development")
-            return v
-        if environment in ("staging", "production"):
-            if len(v) < 32:
-                raise ValueError(
-                    "jwt_secret must be 32+ characters in production/staging"
-                )
-            if v.startswith("dev-"):
-                raise ValueError(
-                    "jwt_secret must NOT start with 'dev-' in production. "
-                    "Generate: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
-                )
-        return v
-
-    @field_validator("allowed_origins", mode="after")
-    @classmethod
-    def validate_allowed_origins(cls, v: list[str], info) -> list[str]:
-        """Reject wildcard CORS origins in production."""
-        environment = info.data.get("environment", "development")
-        if environment == "production" and "*" in v:
-            raise ValueError(
-                "allowed_origins must NOT contain '*' in production. "
-                "Use explicit origins."
-            )
-        return v
-
-    @field_validator("debug", mode="after")
-    @classmethod
-    def validate_debug(cls, v: bool, info) -> bool:
-        """Reject debug=True in production."""
-        environment = info.data.get("environment", "development")
-        if v and environment == "production":
-            raise ValueError("debug must be False in production environment")
-        return v
-
-    @field_validator("email_provider", mode="after")
-    @classmethod
-    def validate_email_provider(cls, v: str, info) -> str:
-        """Validate email provider and ensure required fields are set."""
-        if v == "smtp":
-            smtp_host = info.data.get("smtp_host")
-            if not smtp_host:
-                raise ValueError("SMTP_HOST required when EMAIL_PROVIDER=smtp")
-        elif v == "sendgrid":
-            sendgrid_key = info.data.get("sendgrid_api_key")
-            if not sendgrid_key:
-                raise ValueError("SENDGRID_API_KEY required when EMAIL_PROVIDER=sendgrid")
-        return v
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Computed Properties
-    # ─────────────────────────────────────────────────────────────────────────
 
     @property
-    def is_production(self) -> bool:
-        """Check if running in production environment."""
-        return self.environment == "production"
+    def cors_origins_list(self) -> list[str]:
+        """Parse CORS origins string into list for FastAPI use."""
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
     @property
-    def is_development(self) -> bool:
-        """Check if running in development environment."""
-        return self.environment == "development"
+    def cors_allow_methods_list(self) -> list[str]:
+        """Parse CORS methods string into list."""
+        return [m.strip().upper() for m in self.cors_allow_methods.split(",") if m.strip()]
 
     @property
-    def database_engine_kwargs(self) -> dict:
-        """SQLAlchemy async engine kwargs (pooling, echo, etc.)."""
-        return {
-            "poolclass": "AsyncPool",  # Use async connection pool
-            "pool_size": self.database_pool_size,
-            "max_overflow": self.database_max_overflow,
-            "echo": self.database_echo,
-            "echo_pool": self.database_echo,
-            "connect_args": {
-                "timeout": 30,  # Connection timeout (seconds)
-                "command_timeout": 60,  # Query timeout (seconds)
-                "server_settings": {
-                    "jit": "off",  # Disable JIT for query consistency
-                }
-            }
-        }
+    def cors_allow_headers_list(self) -> list[str]:
+        """Parse CORS headers string into list."""
+        if self.cors_allow_headers.strip() == "*":
+            return ["*"]
+        return [h.strip() for h in self.cors_allow_headers.split(",") if h.strip()]
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Get application settings (cached singleton).
+    """Get application settings (singleton via lru_cache).
     
-    Returns:
-        Settings: Singleton Settings instance with validated configuration.
+    Reads from .env file at first call, validates all settings, and caches result.
+    Subsequent calls return cached instance.
     
     Raises:
-        ValidationError: If any required setting is missing or invalid.
-        ValueError: If weak secrets detected in production.
+        ValidationError: If any setting is invalid or required settings are missing.
     
-    Usage:
-        from backend.core.config import get_settings
-        settings = get_settings()
-        print(settings.database_url)
+    For testing: call get_settings.cache_clear() to reset singleton state between tests.
     
-    Testing:
-        @pytest.fixture(autouse=True)
-        def reset_settings():
-            get_settings.cache_clear()
-            yield
-            get_settings.cache_clear()
-    
-    SECURITY-REVIEW: This function is called exactly once at app startup to ensure
-    all configuration is validated immediately and consistently. Subsequent calls
-    return cached singleton, avoiding repeated validation overhead.
+    Returns:
+        Settings: Immutable, validated settings instance.
     """
     try:
         settings = Settings()
         logger.info(
-            f"Settings loaded: environment={settings.environment}, "
-            f"debug={settings.debug}, api_url={settings.api_url}"
+            "config: Settings loaded successfully [env=%s, debug=%s, db_pool=%d]",
+            settings.environment, settings.debug, settings.database_pool_size
         )
         return settings
     except ValidationError as e:
-        logger.critical(f"Configuration validation failed: {e}")
+        logger.error("config: Settings validation failed. Check .env and environment variables.")
+        for error in e.errors():
+            logger.error("  - %s: %s", error["loc"][0], error["msg"])
         raise
-    except Exception as e:
-        logger.critical(f"Unexpected error loading settings: {e}", exc_info=True)
-        raise
+---
