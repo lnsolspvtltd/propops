@@ -24,7 +24,7 @@ class SetupRequest(BaseModel):
 @router.post("/setup", response_model=OrganisationResponse)
 async def setup_org(
     request: SetupRequest,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     try:
         # Encrypt passwords
@@ -57,14 +57,14 @@ async def setup_org(
 
         return OrganisationResponse(**new_org.__dict__)
     except Exception as e:
-        logger.error(f"Failed to setup organisation: {e}", exc_info=True)
+        logger.exception(f"Failed to setup organisation: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": "Internal server error"}
         )
 
 @router.get("/status", response_model=OrganisationResponse)
-async def get_org_status(org_id: str, db: Session = Depends(get_db)):
+async def get_org_status(org_id: str, db: AsyncSession = Depends(get_db)):
     org = await db.execute(select(Organisation).where(Organisation.id == org_id)).scalar_one_or_none()
     if not org:
         raise HTTPException(
@@ -76,7 +76,7 @@ async def get_org_status(org_id: str, db: Session = Depends(get_db)):
 @router.post("/test-imap", response_model=OrganisationResponse)
 async def test_imap_connection(
     request: SetupRequest,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     try:
         # Encrypt passwords
@@ -89,10 +89,65 @@ async def test_imap_connection(
                 detail={"error": "Cannot connect to IMAP: "}
             )
 
-        return OrganisationResponse(**request.dict())
-    except Exception as e:
-        logger.error(f"Failed to test IMAP connection: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"error": "Internal server error"}
-        )
+---
+
+#### FILE: backend/core/encryption.py
+---
+from cryptography.fernet import Fernet
+import os
+
+def encrypt(plaintext: str) -> str:
+    """Encrypt plaintext using Fernet."""
+    key = os.getenv('FERNET_KEY')
+    if not key:
+        raise ValueError("FERNET_KEY environment variable is missing.")
+    
+    f = Fernet(key)
+    encrypted = f.encrypt(plaintext.encode())
+    return encrypted.decode()
+
+def decrypt(ciphertext: str) -> str:
+    """Decrypt ciphertext using Fernet."""
+    key = os.getenv('FERNET_KEY')
+    if not key:
+        raise ValueError("FERNET_KEY environment variable is missing.")
+    
+    f = Fernet(key)
+    decrypted = f.decrypt(ciphertext.encode())
+    return decrypted.decode()
+---
+
+#### FILE: backend/models/organisation.py
+---
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy import String, Integer, Boolean, DateTime, ForeignKey, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import SQLAlchemyError
+import logging
+
+logger = logging.getLogger(__name__)
+
+class Organisation(Base):
+    __tablename__ = "organisations"
+    
+    id: Mapped[str] = mapped_column(primary_key=True)
+    name: str = mapped_column(String(255), nullable=False)
+    imap_host: str | None = mapped_column(String(255))
+    imap_port: int = mapped_column(Integer, default=993)
+    imap_username: str | None = mapped_column(String(255))
+    imap_password_enc: str | None = mapped_column(String(255))  # Fernet encrypted
+    smtp_host: str | None = mapped_column(String(255))
+    smtp_port: int = mapped_column(Integer, default=587)
+    polling_active: bool = mapped_column(Boolean, default=False)
+    created_at: Mapped[DateTime] = mapped_column(default=DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[DateTime] = mapped_column(default=DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    deleted_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
+
+    # Indexes
+    __table_args__ = (
+        Index("idx_organisations_deleted", deleted_at),
+    )
+
+    def __repr__(self):
+        return f"<Organisation(id={self.id}, name={self.name})>"
+---
