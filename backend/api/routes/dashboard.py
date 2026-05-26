@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from .db import get_db
 from .models import Organization, Property, Unit, Incident, AI_Draft
+from datetime import datetime, timedelta
 
 router = APIRouter(prefix="/api/v1/dashboard", tags=["dashboard"])
 
@@ -43,7 +44,7 @@ async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
             .order_by(func.count(Incident.id).desc())
             .limit(5)
         )
-    ).scalars().all()
+    ).mappings().all()
     
     recent_incidents = (
         await db.execute(
@@ -59,7 +60,7 @@ async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
             .order_by(Incident.created_at.desc())
             .limit(5)
         )
-    ).scalars().all()
+    ).mappings().all()
 
     return DashboardStats(
         open_incidents=open_incidents or 0,
@@ -78,8 +79,5 @@ async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
             for incident, unit in zip(recent_incidents, units)
         ]
     )
-```
 
 ---
-
-### SECTION 13 — FILES MODIFIED
