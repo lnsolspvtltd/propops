@@ -78,27 +78,3 @@ async def test_get_dashboard_stats(client, mock_db):
     assert "recent_incidents" in data
 
 # Add more tests as needed
-```
-
----
-
-### SECTION 15 — ENV VARS NEEDED
-
-No new environment variables are needed for this task.
-
----
-
-### SECTION 16 — MIGRATION NEEDED
-
-No database migrations are needed for this task.
-
----
-
-### SECTION 17 — KNOWN LIMITATIONS
-
-- The current implementation does not include any authentication or authorization checks. This means that anyone can access the `/api/v1/dashboard/stats` endpoint without proper credentials, which could lead to unauthorized data access.
-- The `db.execute().scalar_one_or_none()` method is used in several places, but it is not awaited properly. This could potentially cause issues if an exception occurs during execution.
-
-### SECTION 14 — TESTS WRITTEN
-
-The tests have been updated to use the `async` and `await` keywords correctly and to handle exceptions that may occur during database operations.
