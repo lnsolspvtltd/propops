@@ -103,14 +103,55 @@ CREATE TABLE IF NOT EXISTS incidents (
     deleted_at      TIMESTAMPTZ  -- soft delete
 );
 
-CREATE INDEX IF NOT EXISTS idx_incidents_org_status 
-    ON incidents(org_id, status) WHERE deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_incidents_property 
-    ON incidents(property_id) WHERE deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_incidents_unit 
-    ON incidents(unit_id) WHERE deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_incidents_thread 
-    ON incidents(thread_id) WHERE deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_incidents_deleted 
-    ON incidents(deleted_at) WHERE deleted_at IS NOT NULL;
----
+CREATE INDEX IF NOT EXISTS idx_incidents_org_status ON incidents(org_id, status);
+CREATE INDEX IF NOT EXISTS idx_incidents_thread ON incidents(thread_id);
+CREATE INDEX IF NOT EXISTS idx_incidents_urgency ON incidents(urgency, status);
+
+-- ── Communication Logs ───────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS communication_logs (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    incident_id     UUID NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+    thread_id       UUID NOT NULL,
+    direction       VARCHAR(10) NOT NULL,   -- inbound | outbound
+    channel         VARCHAR(50) NOT NULL,   -- email | sms | portal
+    sender          VARCHAR(255),
+    recipient       VARCHAR(255),
+    subject         VARCHAR(500),
+    body            TEXT,
+    raw_headers     JSONB,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_comm_logs_incident ON communication_logs(incident_id);
+CREATE INDEX IF NOT EXISTS idx_comm_logs_thread ON communication_logs(thread_id);
+
+-- ── AI Drafts (approval queue) ───────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS ai_drafts (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    incident_id     UUID NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+    draft_type      VARCHAR(50),    -- tenant_reply | vendor_outreach | escalation
+    recipient_email VARCHAR(255),
+    subject         VARCHAR(500),
+    body            TEXT NOT NULL,
+    ai_model        VARCHAR(100),
+    confidence      FLOAT,
+    status          VARCHAR(50) DEFAULT 'pending',  -- pending | approved | rejected | sent
+    approved_by     VARCHAR(255),
+    approved_at     TIMESTAMPTZ,
+    sent_at         TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_drafts_incident ON ai_drafts(incident_id);
+CREATE INDEX IF NOT EXISTS idx_drafts_status ON ai_drafts(status);
+
+-- ── Audit Log ────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    org_id          UUID REFERENCES organizations(id),
+    incident_id     UUID REFERENCES incidents(id),
+    action          VARCHAR(100) NOT NULL,
+    actor           VARCHAR(255),   -- 'ai:triage' | 'human:user@email.com'
+    details         JSONB,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);

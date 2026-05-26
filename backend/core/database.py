@@ -59,16 +59,4 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.commit()
         except Exception as e:
             await session.rollback()
-            logger.error("Database session error: %s", e, exc_info=True)
             raise
-
-
-async def close_db() -> None:
-    """Close all database connections.
-    
-    Called on application shutdown via lifespan context manager.
-    Ensures all connection pool connections are properly disposed.
-    """
-    await engine.dispose()
-    logger.info("Database connections closed")
----

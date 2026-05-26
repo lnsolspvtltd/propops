@@ -10,9 +10,8 @@ Key design decisions:
 - is_production property for environment-specific guards throughout the codebase.
 """
 from functools import lru_cache
-from typing import Optional, List
-
-from pydantic import Field, field_validator, ValidationError
+from typing import Optional
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -39,16 +38,28 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # ── Core ──────────────────────────────────────────────────────────────────
-    environment: str = Field(
-        default="development",
-        description="Deployment environment: development | staging | production",
-    )
-    log_level: str = Field(
-        default="INFO",
-        pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$",
-    )
-    debug: bool = Field(default=False)
+    # App
+    environment: str = "development"
+    log_level: str = "INFO"
+    secret_key: str = ""
+    cors_origins: list[str] = ["http://localhost:3000"]
+    version: str = "0.1.0-alpha"
+
+    @field_validator("secret_key", mode="after")
+    @classmethod
+    def validate_secret_key(cls, v: str, info) -> str:
+        """SECURITY-REVIEW: Ensure secret_key is not empty in production or at all.
+        
+        Empty secret_key breaks JWT/session signing silently.
+        Fail fast at startup rather than runtime.
+        """
+        if not v or not v.strip():
+            env = info.data.get("environment", "development")
+            raise ValueError(
+                f"secret_key must not be empty. Set SECRET_KEY environment variable. "
+                f"(environment={env})"
+            )
+        return v
 
     # ── Database ──────────────────────────────────────────────────────────────
     database_url: Optional[str] = Field(
@@ -166,6 +177,5 @@ def get_settings() -> Settings:
     Reads from .env file at first call, validates all settings, and caches result.
     Subsequent calls return cached instance.
 
-# Module-level singleton used by most modules.
-# New code should prefer get_settings() to enable easier testing.
 settings = get_settings()
+---

@@ -318,86 +318,10 @@ async def _fetch_emails(db: AsyncSession, org_id: str) -> int:
             except Exception:
                 pass  # Best effort cleanup
 
-    return processed_count
-
-
-# Global task handle
-_inbox_poller_task: Optional[asyncio.Task] = None
-
-
-async def _poller_loop():
-    """Infinite loop: poll IMAP every N seconds.
-    
-    Graceful error handling:
-      - Catches and logs errors per poll cycle
-      - Continues polling on transient errors
-      - Tracks fatal errors for alerting
-    """
-    logger.info(f"inbox_poller: Starting poller loop (interval={settings.imap_poll_interval_seconds}s)")
-    
-    while True:
-        try:
-            async with AsyncSessionLocal() as db:
-                # FIXME: org_id should be configurable per-org polling
-                # For now, hardcoded to first/default org
-                org_id = settings.default_org_id
-                processed = await _fetch_emails(db, org_id)
-                if processed > 0:
-                    logger.info(f"inbox_poller: Processed {processed} emails")
-                    
-        except Exception as e:
-            logger.error(f"inbox_poller: Error in poll cycle: {e}", exc_info=True)
-            # Continue polling despite errors
-        
-        await asyncio.sleep(settings.imap_poll_interval_seconds)
-
-
-async def start_inbox_poller():
-    """Start background inbox poller task.
-    
-    Error handling:
-        If poller fails to start, logs error but does NOT block app startup.
-        Application degrades gracefully (manual inbox ingestion still available).
-    """
-    global _inbox_poller_task
-    try:
-        _inbox_poller_task = asyncio.create_task(_poller_loop())
-        logger.info("inbox_poller: Background task started successfully")
-    except Exception as e:
-        logger.error(
-            f"inbox_poller: Failed to start background poller: {e}. "
-            f"Application will continue but automated email ingestion is disabled. "
-            f"Manual incident creation and inbox API still available.",
-            exc_info=True,
-        )
-
-
-async def stop_inbox_poller():
-    """Stop background inbox poller task gracefully.
-    
-    Cancels task and waits for cleanup.
-    """
-    global _inbox_poller_task
-    if _inbox_poller_task:
-        try:
-            _inbox_poller_task.cancel()
-            await _inbox_poller_task
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.warning(f"inbox_poller: Error stopping poller: {e}")
-        logger.info("inbox_poller: Background task stopped")
-
-
-def get_poller_health() -> dict:
-    """Return health metrics for inbox poller.
-    
-    Returns:
-        Dict with status, error counts, and recent fatal errors
-    """
-    return {
-        "running": _inbox_poller_task is not None and not _inbox_poller_task.done(),
-        "transient_errors": TRANSIENT_ERROR_COUNT,
-        "fatal_errors_count": len(FATAL_ERRORS),
-        "recent_fatal_errors": FATAL_ERRORS[-5:],  # Last 5
-    }
+    async def run_forever(self):
+        """Poll inbox continuously."""
+        self.running = True
+        logger.info(f"inbox_poller: starting (interval={settings.imap_poll_interval_seconds}s)")
+        while self.running:
+            await self.poll_once()
+            await asyncio.sleep(settings.imap_poll_interval_seconds)

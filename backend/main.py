@@ -94,6 +94,4 @@ app.include_router(approvals.router, prefix="/api/v1/approvals", tags=["approval
 
 @app.get("/")
 async def root():
-    """Root endpoint — returns service status."""
     return {"service": "PropOps API", "version": "0.1.0", "status": "running"}
----
