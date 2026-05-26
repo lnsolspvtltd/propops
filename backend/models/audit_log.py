@@ -1,4 +1,5 @@
 """Audit log model and utilities."""
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Optional, Any
@@ -6,6 +7,8 @@ from sqlalchemy import Column, String, DateTime, ForeignKey, Index
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from backend.core.database import Base
+
+logger = logging.getLogger(__name__)
 
 
 class AuditLog(Base):
@@ -56,7 +59,6 @@ async def log_incident_action(
         details=details or {},
     )
     db.add(log)
-    logger = __import__("logging").getLogger(__name__)
     logger.info(
         f"audit_log: {action} | incident={incident_id} | actor={actor} | details={details}"
     )
