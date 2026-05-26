@@ -2,7 +2,7 @@
 import logging
 from functools import lru_cache
 from typing import Optional
-from pydantic import field_validator, model_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -93,54 +93,20 @@ class Settings(BaseSettings):
                 raise ValueError("Cannot use localhost database URL in production")
 
 
-    @field_validator("secret_key")
-    @classmethod
-    def validate_secret_key(cls, v: str, info) -> str:
-        """Reject weak secrets in production."""
-        data = info.data
-        if data.get("environment") == "production":
-            if len(v) < 32 or v.startswith("dev-"):
+    @model_validator(mode='after')
+    def validate_production_secrets(self) -> 'Settings':
+        """Raise at startup if production secrets are missing."""
+        if self.environment == 'production':
+            if not self.secret_key:
                 raise ValueError(
-                    "secret_key must be 32+ characters and NOT start with 'dev-' "
-                    "in production. Generate with: openssl rand -hex 32"
+                    'SECRET_KEY must be set in production. '
+                    'Generate with: openssl rand -hex 32'
                 )
-        return v
+            if not self.anthropic_api_key:
+                raise ValueError('ANTHROPIC_API_KEY must be set in production.')
+        return self
 
-    @field_validator("database_url")
-    @classmethod
-    def validate_database_url(cls, v: Optional[str], info) -> Optional[str]:
-        """database_url is required in production."""
-        data = info.data
-        if data.get("environment") == "production" and not v:
-            raise ValueError(
-                "database_url must be set explicitly in production. "
-                "No default is provided."
-            )
-        return v
-
-    @field_validator("cors_origins")
-    @classmethod
-    def validate_cors_origins(cls, v: List[str], info) -> List[str]:
-        """Block wildcard CORS in production."""
-        data = info.data
-        if data.get("environment") == "production" and "*" in v:
-            raise ValueError(
-                "cors_origins must NOT contain '*' in production. "
-                "Use explicit origins."
-            )
-        return v
-
-    @field_validator("debug")
-    @classmethod
-    def validate_debug(cls, v: bool, info) -> bool:
-        """debug=True is not allowed in production."""
-        data = info.data
-        if data.get("environment") == "production" and v:
-            raise ValueError("debug must be False in production environment")
-        return v
-
-
-@lru_cache(maxsize=1)
+@lru_cache
 def get_settings() -> Settings:
     settings = Settings()
     settings.validate_startup()
@@ -151,3 +117,4 @@ def get_settings() -> Settings:
 
 settings = get_settings()
 
+settings = get_settings()

@@ -214,27 +214,18 @@ Generate a professional draft response following the safety rules above. Output 
                 error="Draft rejected: contains unsafe content. Human review required.",
                 safety_issues=safety_issues
             )
-        
-        logger.info(
-            f"Draft generated successfully for incident '{incident_title}' "
-            f"(type: {draft_type}, recipient: {recipient_email})"
-        )
-        
-        return DraftResult(
-            success=True,
-            body=draft_body,
-            safety_issues=[]
-        )
-    
-    except anthropic.APIError as e:
-        logger.error(f"Anthropic API error: {e}", exc_info=True)
-        return DraftResult(
-            success=False,
-            error=f"AI service error: {str(e)[:100]}"
-        )
-    except Exception as e:
-        logger.error(f"Unexpected error in generate_draft: {e}", exc_info=True)
-        return DraftResult(
-            success=False,
-            error="Internal error generating draft — see logs"
-        )
+        except anthropic.RateLimitError:
+            time.sleep(2 ** attempt)
+        except Exception as e:
+            logger.error(f"draft_agent: error attempt {attempt+1}: {e}")
+            if attempt == 2:
+                return DraftResult(
+                    subject=f"Re: {incident_title}",
+                    body="Thank you for reaching out. We have received your message and will respond shortly.",
+                    draft_type=draft_type,
+                    success=False, error=str(e),
+                )
+    return DraftResult(
+        subject="", body="", draft_type=draft_type,
+        success=False, error="Max retries exceeded",
+    )

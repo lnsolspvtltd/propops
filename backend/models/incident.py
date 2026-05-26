@@ -1,7 +1,7 @@
 """SQLAlchemy models for PropOps."""
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Text, Float, DateTime, ForeignKey, Integer, Index
+from sqlalchemy import Column, String, Text, Float, DateTime, ForeignKey, Integer
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from backend.core.database import Base
@@ -59,8 +59,8 @@ class Incident(Base):
     source_channel = Column(String(50))
     source_address = Column(String(255))
     raw_message = Column(Text)
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
-    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     resolved_at = Column(DateTime(timezone=True))
     org = relationship("Organization", back_populates="incidents")
     drafts = relationship("AIDraft", back_populates="incident", cascade="all, delete")
@@ -109,5 +109,3 @@ class CommunicationLog(Base):
     raw_headers = Column(JSONB)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     incident = relationship("Incident", back_populates="comm_logs")
-</
->
