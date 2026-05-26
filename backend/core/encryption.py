@@ -20,3 +20,4 @@ def decrypt(ciphertext: str) -> str:
     f = Fernet(key)
     decrypted = f.decrypt(ciphertext.encode())
     return decrypted.decode()
+---
