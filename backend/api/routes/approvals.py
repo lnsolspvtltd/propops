@@ -7,7 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from backend.core.database import get_db
 from backend.models.incident import AIDraft, Incident
+from backend.api.auth import get_current_user, require_role, User
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -19,22 +21,55 @@ class RejectRequest(BaseModel):
     reason: str = ""
 
 
-@router.get("/pending")
-async def list_pending_approvals(db: AsyncSession = Depends(get_db)):
-    """List all drafts awaiting approval."""
+class RejectRequest(BaseModel):
+    """Request to reject a draft."""
+    reason: str = ""
+
+
+class ApprovalResponse(BaseModel):
+    status: str
+    draft_id: str
+    approved_by: str
+    timestamp: str
+
+
+class PendingApprovalItem(BaseModel):
+    draft_id: str
+    incident_id: str
+    incident_title: str
+    urgency: str
+    subject: str
+    body: str
+    recipient: str
+    created_at: str
+
+
+@router.get("/pending", response_model=list[PendingApprovalItem])
+async def list_pending_approvals(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all drafts awaiting approval. Requires authentication."""
+    logger.info(f"User {user.email} listing pending approvals")
+    
     result = await db.execute(
         select(AIDraft, Incident)
         .join(Incident, AIDraft.incident_id == Incident.id)
         .where(AIDraft.status == "pending")
     )
     rows = result.all()
+    
     return [
-        {
-            "draft_id": str(d.id), "incident_id": str(d.incident_id),
-            "incident_title": inc.title, "urgency": inc.urgency,
-            "subject": d.subject, "body": d.body, "recipient": d.recipient_email,
-            "created_at": d.created_at.isoformat() if d.created_at else "",
-        }
+        PendingApprovalItem(
+            draft_id=str(d.id),
+            incident_id=str(d.incident_id),
+            incident_title=inc.title,
+            urgency=inc.urgency,
+            subject=d.subject,
+            body=d.body,
+            recipient=d.recipient_email,
+            created_at=d.created_at.isoformat() if d.created_at else "",
+        )
         for d, inc in rows
     ]
 
@@ -49,7 +84,9 @@ async def approve_draft(draft_id: str, req: ApproveRequest, db: AsyncSession = D
     result = await db.execute(select(AIDraft).where(AIDraft.id == draft_uuid))
     draft = result.scalar_one_or_none()
     if not draft:
+        logger.warning(f"Draft {draft_id} not found")
         raise HTTPException(status_code=404, detail="Draft not found")
+    
     draft.status = "approved"
     draft.approved_by = req.approved_by
     draft.approved_at = datetime.now(timezone.utc)
@@ -67,7 +104,9 @@ async def reject_draft(draft_id: str, req: RejectRequest, db: AsyncSession = Dep
     result = await db.execute(select(AIDraft).where(AIDraft.id == draft_uuid))
     draft = result.scalar_one_or_none()
     if not draft:
+        logger.warning(f"Draft {draft_id} not found")
         raise HTTPException(status_code=404, detail="Draft not found")
+    
     draft.status = "rejected"
     # Persist rejection metadata if model supports it
     if hasattr(draft, "rejection_reason"):
