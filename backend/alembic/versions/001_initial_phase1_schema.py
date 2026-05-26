@@ -227,4 +227,3 @@ def downgrade() -> None:
     op.drop_table("organizations")
     
     logger.info("migration: Phase 1 schema rolled back successfully")
----
