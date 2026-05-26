@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from backend.core.database import get_db
 from backend.models.incident import AIDraft, Incident
+from backend.core.auth import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -15,7 +16,7 @@ router = APIRouter()
 
 class ApproveRequest(BaseModel):
     """Request to approve a draft for sending."""
-    approved_by: str = "founder"
+    pass
 
 
 class RejectRequest(BaseModel):
@@ -51,6 +52,7 @@ async def list_pending_approvals(db: AsyncSession = Depends(get_db)):
 async def approve_draft(
     draft_id: str,
     req: ApproveRequest,
+    current_user: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Approve a draft — marks it ready to send.
@@ -59,82 +61,115 @@ async def approve_draft(
     
     Args:
         draft_id: UUID of draft to approve
-        req: Approval request with approver identity
+        req: Approval request body (currently unused but reserved for future fields)
+        current_user: Authenticated user from JWT or session
         db: Database session
         
     Returns:
         Status confirmation with draft_id
         
     Raises:
+        HTTPException: 401 if not authenticated
         HTTPException: 404 if draft not found
+        HTTPException: 422 if draft_id format invalid
     """
     try:
         try:
             draft_uuid = uuid.UUID(draft_id)
         except ValueError:
+            logger.warning(f"Invalid draft_id format attempted: {draft_id!r}")
             raise HTTPException(status_code=422, detail=f"Invalid draft_id format: {draft_id!r}")
+        
         result = await db.execute(select(AIDraft).where(AIDraft.id == draft_uuid))
         draft = result.scalar_one_or_none()
         if not draft:
+            logger.warning(f"Draft not found: {draft_id}")
             raise HTTPException(status_code=404, detail="Draft not found")
         
         draft.status = "approved"
-        draft.approved_by = req.approved_by
+        draft.approved_by = current_user
         draft.approved_at = datetime.now(timezone.utc)
         await db.commit()
         
-        logger.info(f"Draft {draft_id} approved by {req.approved_by}")
-        return {"status": "approved", "draft_id": draft_id}
+        logger.info(
+            f"Draft {draft_id} approved by {current_user} at {draft.approved_at.isoformat()}",
+            extra={"draft_id": draft_id, "approver": current_user, "action": "approve"}
+        )
+        return {"status": "approved", "draft_id": draft_id, "approved_by": current_user}
+    except HTTPException:
+        raise
     except Exception as e:
         await db.rollback()
-        logger.error(f"Error approving draft {draft_id}: {e}", exc_info=True)
-        raise
+        logger.error(
+            f"Error approving draft {draft_id}: {e}",
+            exc_info=True,
+            extra={"draft_id": draft_id, "error_type": type(e).__name__}
+        )
+        raise HTTPException(status_code=500, detail="Failed to approve draft — see logs")
 
 
 @router.post("/{draft_id}/reject")
 async def reject_draft(
     draft_id: str,
     req: RejectRequest,
+    current_user: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Reject a draft with optional reason.
+    """Reject a draft — marks it as rejected with reason for audit trail.
     
-    Records rejector identity and timestamp for audit trail.
+    Records rejector identity, reason, and timestamp.
     
     Args:
         draft_id: UUID of draft to reject
-        req: Rejection request with optional reason
+        req: Rejection request with reason
+        current_user: Authenticated user from JWT or session
         db: Database session
         
     Returns:
-        Status confirmation with draft_id
+        Status confirmation with draft_id and reason
         
     Raises:
+        HTTPException: 401 if not authenticated
         HTTPException: 404 if draft not found
-        
-    Note:
-        SECURITY-REVIEW: Captures rejector identity for audit purposes.
-        Rejected drafts can be modified and resubmitted.
+        HTTPException: 422 if draft_id format invalid
     """
     try:
         try:
             draft_uuid = uuid.UUID(draft_id)
         except ValueError:
+            logger.warning(f"Invalid draft_id format attempted: {draft_id!r}")
             raise HTTPException(status_code=422, detail=f"Invalid draft_id format: {draft_id!r}")
+        
         result = await db.execute(select(AIDraft).where(AIDraft.id == draft_uuid))
         draft = result.scalar_one_or_none()
         if not draft:
+            logger.warning(f"Draft not found for rejection: {draft_id}")
             raise HTTPException(status_code=404, detail="Draft not found")
         
         draft.status = "rejected"
-        draft.rejected_by = "admin"  # AUDIT: In production, capture from JWT claims
+        draft.rejected_by = current_user
+        draft.rejection_reason = req.reason
         draft.rejected_at = datetime.now(timezone.utc)
-        draft.rejection_reason = req.reason if req.reason else None
         await db.commit()
         
-        logger.info(f"Draft {draft_id} rejected. Reason: {req.reason or '(none)'}")
-        return {"status": "rejected", "draft_id": draft_id}
+        logger.info(
+            f"Draft {draft_id} rejected by {current_user} at {draft.rejected_at.isoformat()}. Reason: {req.reason[:100]}",
+            extra={"draft_id": draft_id, "rejector": current_user, "action": "reject", "reason": req.reason}
+        )
+        return {
+            "status": "rejected",
+            "draft_id": draft_id,
+            "rejected_by": current_user,
+            "reason": req.reason
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         await db.rollback()
-        logger.error(f"Error rejecting draft {draft_id}: {e}", exc_info=True)
-        raise
+        logger.error(
+            f"Error rejecting draft {draft_id}: {e}",
+            exc_info=True,
+            extra={"draft_id": draft_id, "error_type": type(e).__name__}
+        )
+        raise HTTPException(status_code=500, detail="Failed to reject draft — see logs")
+---
