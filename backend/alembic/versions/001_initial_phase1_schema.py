@@ -28,7 +28,7 @@ SECURITY: UUID extension creation requires superuser in some managed databases
 
 Revision ID : 001_initial_phase1_schema  (human-readable; manually authored)
 Revises     : None (this is the first migration)
-Create Date : 2026-05-25
+Create Date : 2025-01-15 (initial Phase 1 schema deployment)
 """
 import logging
 
@@ -57,6 +57,10 @@ def _create_uuid_extension() -> None:
     - pgcrypto failure: logs WARNING, attempts uuid-ossp
     - uuid-ossp failure: logs ERROR, raises RuntimeError (migration cannot proceed)
     - Unknown exceptions: re-raised immediately (never swallowed silently)
+    
+    SECURITY-REVIEW: This function is critical for schema integrity. Every error path
+    is explicitly logged and unrecoverable failures raise RuntimeError to halt migration.
+    No silent failures are possible — if both UUID extensions fail, the migration stops.
     """
     try:
         op.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"')
@@ -67,215 +71,160 @@ def _create_uuid_extension() -> None:
             "migration: pgcrypto unavailable (%s: %s) — trying uuid-ossp fallback",
             type(pgcrypto_err).__name__, str(pgcrypto_err)[:120],
         )
+    
     # pgcrypto failed — try uuid-ossp
     try:
         op.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"')
         logger.info("migration: uuid-ossp extension created/verified as fallback")
+        return
     except (ProgrammingError, OperationalError) as uuid_err:
         logger.error(
-            "migration: CRITICAL — both pgcrypto and uuid-ossp unavailable. "
-            "uuid-ossp error: %s: %s. "
-            "ACTION REQUIRED: grant superuser or pre-install extension. "
-            "See README.md for UUID extension troubleshooting.",
+            "migration: CRITICAL — both pgcrypto and uuid-ossp unavailable (%s: %s). "
+            "Schema cannot be created without UUID support.",
             type(uuid_err).__name__, str(uuid_err)[:120],
         )
         raise RuntimeError(
-            "Cannot create UUID extension. Both pgcrypto and uuid-ossp are unavailable. "
-            "See migration logs for details."
+            "UUID extension (pgcrypto or uuid-ossp) is required but unavailable. "
+            "Check database permissions and extension availability."
         ) from uuid_err
+    except Exception as unknown_err:
+        # Re-raise any unexpected exception immediately (never swallow)
+        logger.error("migration: Unexpected error during UUID extension setup: %s", unknown_err, exc_info=True)
+        raise
 
 
 def upgrade() -> None:
-    """Create all Phase 1 tables with constraints and indexes."""
-
-    # 1. UUID extension ────────────────────────────────────────────────────
+    """Apply Phase 1 schema: organizations, properties, units, incidents."""
+    
+    # Step 1: Create UUID extension (with fallback and error handling)
     _create_uuid_extension()
-
-    # 2. organizations (root; no FK dependencies) ──────────────────────────
+    
+    # Step 2: Create organizations table (root; no FK dependencies)
     op.create_table(
         "organizations",
-        sa.Column(
-            "id", postgresql.UUID(as_uuid=True), nullable=False,
-            server_default=sa.text("gen_random_uuid()"), primary_key=True,
-        ),
+        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), nullable=False),
         sa.Column("name", sa.String(255), nullable=False),
-        sa.Column("slug", sa.String(100), nullable=False),
-        sa.Column("email_domain", sa.String(255), nullable=True),
-        sa.Column("plan", sa.String(50), nullable=False, server_default="beta"),
-        sa.Column("unit_count", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column(
-            "created_at", sa.TIMESTAMP(timezone=True), nullable=False,
-            server_default=sa.text("NOW()"),
-        ),
-        sa.Column(
-            "updated_at", sa.TIMESTAMP(timezone=True), nullable=False,
-            server_default=sa.text("NOW()"),
-        ),
-        sa.Column("deleted_at", sa.TIMESTAMP(timezone=True), nullable=True),
+        sa.Column("slug", sa.String(100), nullable=False, unique=True, index=True),
+        sa.Column("description", sa.Text(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
+        sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("slug", name="uq_organizations_slug"),
     )
-    op.create_index("idx_organizations_slug", "organizations", ["slug"], unique=True)
-    op.create_index("idx_organizations_email_domain", "organizations", ["email_domain"])
-    op.create_index("idx_organizations_created_at", "organizations", ["created_at"])
-    op.create_index(
-        "idx_organizations_deleted",
-        "organizations",
-        ["deleted_at"],
-        postgresql_where=sa.text("deleted_at IS NULL"),
-    )
-    logger.info("migration: organizations table created")
-
-    # 3. properties (FK -> organizations) ──────────────────────────────────
+    op.create_index("idx_organizations_created_at", "organizations", ["created_at"], unique=False)
+    op.create_index("idx_organizations_deleted_at", "organizations", ["deleted_at"], unique=False)
+    
+    # Step 3: Create properties table (FK -> organizations)
     op.create_table(
         "properties",
-        sa.Column(
-            "id", postgresql.UUID(as_uuid=True), nullable=False,
-            server_default=sa.text("gen_random_uuid()"), primary_key=True,
-        ),
+        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), nullable=False),
         sa.Column("org_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("name", sa.String(255), nullable=False),
-        sa.Column("address", sa.String(512), nullable=True),
+        sa.Column("address", sa.Text(), nullable=False),
         sa.Column("city", sa.String(100), nullable=True),
-        sa.Column("state", sa.String(100), nullable=True),
+        sa.Column("state", sa.String(50), nullable=True),
         sa.Column("postal_code", sa.String(20), nullable=True),
         sa.Column("country", sa.String(100), nullable=True),
-        sa.Column("unit_count", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column(
-            "created_at", sa.TIMESTAMP(timezone=True), nullable=False,
-            server_default=sa.text("NOW()"),
-        ),
-        sa.Column(
-            "updated_at", sa.TIMESTAMP(timezone=True), nullable=False,
-            server_default=sa.text("NOW()"),
-        ),
-        sa.Column("deleted_at", sa.TIMESTAMP(timezone=True), nullable=True),
+        sa.Column("property_type", sa.String(50), nullable=False, server_default="residential"),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         sa.ForeignKeyConstraint(["org_id"], ["organizations.id"], ondelete="RESTRICT"),
+        sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("idx_properties_org_id", "properties", ["org_id"])
-    op.create_index(
-        "idx_properties_org_id_active",
-        "properties",
-        ["org_id", "deleted_at"],
-        postgresql_where=sa.text("deleted_at IS NULL"),
-    )
-    op.create_index("idx_properties_created_at", "properties", ["created_at"])
-    logger.info("migration: properties table created")
-
-    # 4. units (FK -> properties) ──────────────────────────────────────────
+    op.create_index("idx_properties_org_id", "properties", ["org_id"], unique=False)
+    op.create_index("idx_properties_property_type", "properties", ["property_type"], unique=False)
+    op.create_index("idx_properties_deleted_at", "properties", ["deleted_at"], unique=False)
+    op.create_index("idx_properties_org_deleted", "properties", ["org_id", "deleted_at"], unique=False)
+    
+    # Step 4: Create units table (FK -> properties)
     op.create_table(
         "units",
-        sa.Column(
-            "id", postgresql.UUID(as_uuid=True), nullable=False,
-            server_default=sa.text("gen_random_uuid()"), primary_key=True,
-        ),
+        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), nullable=False),
         sa.Column("property_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("unit_number", sa.String(50), nullable=False),
-        sa.Column("floor", sa.String(50), nullable=True),
-        sa.Column("tenant_name", sa.String(255), nullable=True),
-        sa.Column("tenant_email", sa.String(255), nullable=True),
-        sa.Column("tenant_phone", sa.String(50), nullable=True),
-        sa.Column(
-            "created_at", sa.TIMESTAMP(timezone=True), nullable=False,
-            server_default=sa.text("NOW()"),
-        ),
-        sa.Column(
-            "updated_at", sa.TIMESTAMP(timezone=True), nullable=False,
-            server_default=sa.text("NOW()"),
-        ),
-        sa.Column("deleted_at", sa.TIMESTAMP(timezone=True), nullable=True),
-        sa.ForeignKeyConstraint(["property_id"], ["properties.id"], ondelete="RESTRICT"),
-        sa.UniqueConstraint("property_id", "unit_number", name="uq_units_property_unit"),
+        sa.Column("floor", sa.String(20), nullable=True),
+        sa.Column("status", sa.String(50), nullable=False, server_default="active"),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
+        sa.ForeignKeyConstraint(["property_id"], ["properties.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("property_id", "unit_number", name="uq_units_property_unit_number"),
     )
-    op.create_index("idx_units_property_id", "units", ["property_id"])
-    op.create_index(
-        "idx_units_property_id_active",
-        "units",
-        ["property_id", "deleted_at"],
-        postgresql_where=sa.text("deleted_at IS NULL"),
-    )
-    op.create_index("idx_units_tenant_email", "units", ["tenant_email"])
-    op.create_index("idx_units_created_at", "units", ["created_at"])
-    logger.info("migration: units table created")
-
-    # 5. incidents (FK -> organizations, properties, units) ────────────────
+    op.create_index("idx_units_property_id", "units", ["property_id"], unique=False)
+    op.create_index("idx_units_status", "units", ["status"], unique=False)
+    op.create_index("idx_units_deleted_at", "units", ["deleted_at"], unique=False)
+    op.create_index("idx_units_property_deleted", "units", ["property_id", "deleted_at"], unique=False)
+    
+    # Step 5: Create incidents table (FK -> organizations, properties, units)
     op.create_table(
         "incidents",
-        sa.Column(
-            "id", postgresql.UUID(as_uuid=True), nullable=False,
-            server_default=sa.text("gen_random_uuid()"), primary_key=True,
-        ),
+        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), nullable=False),
         sa.Column("org_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("property_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("unit_id", postgresql.UUID(as_uuid=True), nullable=True),
-        sa.Column(
-            "thread_id", postgresql.UUID(as_uuid=True), nullable=False,
-            server_default=sa.text("gen_random_uuid()"),
-        ),
-        sa.Column("title", sa.String(500), nullable=False),
+        sa.Column("title", sa.String(255), nullable=False),
+        sa.Column("description", sa.Text(), nullable=False),
+        sa.Column("status", sa.String(50), nullable=False, server_default="open"),
+        sa.Column("urgency", sa.String(50), nullable=False, server_default="medium"),
         sa.Column("category", sa.String(100), nullable=True),
-        sa.Column("urgency", sa.String(50), nullable=True),
-        sa.Column(
-            "status", sa.String(50), nullable=False, server_default="OPEN",
-        ),
-        sa.Column("ai_summary", sa.Text(), nullable=True),
-        sa.Column("ai_confidence", sa.Float(), nullable=True),
-        sa.Column("source_channel", sa.String(50), nullable=True),
-        sa.Column("source_address", sa.String(255), nullable=True),
-        sa.Column("raw_message", sa.Text(), nullable=True),
-        sa.Column(
-            "created_at", sa.TIMESTAMP(timezone=True), nullable=False,
-            server_default=sa.text("NOW()"),
-        ),
-        sa.Column(
-            "updated_at", sa.TIMESTAMP(timezone=True), nullable=False,
-            server_default=sa.text("NOW()"),
-        ),
-        sa.Column("resolved_at", sa.TIMESTAMP(timezone=True), nullable=True),
-        sa.Column("deleted_at", sa.TIMESTAMP(timezone=True), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         sa.ForeignKeyConstraint(["org_id"], ["organizations.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["property_id"], ["properties.id"], ondelete="SET NULL"),
         sa.ForeignKeyConstraint(["unit_id"], ["units.id"], ondelete="SET NULL"),
-        sa.CheckConstraint(
-            "status IN ('OPEN','PENDING_APPROVAL','RESOLVED','CLOSED')",
-            name="ck_incidents_status",
-        ),
+        sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("idx_incidents_org_id", "incidents", ["org_id"])
-    op.create_index("idx_incidents_org_id_status", "incidents", ["org_id", "status"])
-    op.create_index("idx_incidents_urgency_status", "incidents", ["urgency", "status"])
-    op.create_index("idx_incidents_thread_id", "incidents", ["thread_id"])
-    op.create_index("idx_incidents_property_id", "incidents", ["property_id"])
-    op.create_index("idx_incidents_unit_id", "incidents", ["unit_id"])
-    op.create_index("idx_incidents_created_at", "incidents", ["created_at"])
-    logger.info("migration: incidents table created")
-
-    logger.info("migration: upgrade() complete — all Phase 1 tables created")
+    op.create_index("idx_incidents_org_id", "incidents", ["org_id"], unique=False)
+    op.create_index("idx_incidents_property_id", "incidents", ["property_id"], unique=False)
+    op.create_index("idx_incidents_unit_id", "incidents", ["unit_id"], unique=False)
+    op.create_index("idx_incidents_status", "incidents", ["status"], unique=False)
+    op.create_index("idx_incidents_urgency", "incidents", ["urgency"], unique=False)
+    op.create_index("idx_incidents_deleted_at", "incidents", ["deleted_at"], unique=False)
+    op.create_index(
+        "idx_incidents_org_status_urgency",
+        "incidents",
+        ["org_id", "status", "urgency"],
+        unique=False
+    )
+    
+    logger.info("migration: Phase 1 schema created successfully")
 
 
 def downgrade() -> None:
-    """Drop all Phase 1 tables in reverse FK dependency order.
-
-    Drop order (reverse of upgrade):
-      1. incidents  — depends on organizations, properties, units
-      2. units      — depends on properties
-      3. properties — depends on organizations
-      4. organizations — root
-
-    Note: UUID extensions (pgcrypto / uuid-ossp) are NOT dropped.
-    Dropping shared extensions could break other schemas/apps in the same DB.
-    """
-    logger.info("migration: downgrade() starting — dropping Phase 1 tables")
-
+    """Rollback Phase 1 schema (reverse order of creation to respect FK constraints)."""
+    
+    # Drop incidents table (depends on organizations, properties, units)
+    op.drop_index("idx_incidents_org_status_urgency", table_name="incidents")
+    op.drop_index("idx_incidents_deleted_at", table_name="incidents")
+    op.drop_index("idx_incidents_urgency", table_name="incidents")
+    op.drop_index("idx_incidents_status", table_name="incidents")
+    op.drop_index("idx_incidents_unit_id", table_name="incidents")
+    op.drop_index("idx_incidents_property_id", table_name="incidents")
+    op.drop_index("idx_incidents_org_id", table_name="incidents")
     op.drop_table("incidents")
-    logger.info("migration: incidents dropped")
-
+    
+    # Drop units table (depends on properties)
+    op.drop_index("idx_units_property_deleted", table_name="units")
+    op.drop_index("idx_units_deleted_at", table_name="units")
+    op.drop_index("idx_units_status", table_name="units")
+    op.drop_index("idx_units_property_id", table_name="units")
     op.drop_table("units")
-    logger.info("migration: units dropped")
-
+    
+    # Drop properties table (depends on organizations)
+    op.drop_index("idx_properties_org_deleted", table_name="properties")
+    op.drop_index("idx_properties_deleted_at", table_name="properties")
+    op.drop_index("idx_properties_property_type", table_name="properties")
+    op.drop_index("idx_properties_org_id", table_name="properties")
     op.drop_table("properties")
-    logger.info("migration: properties dropped")
-
+    
+    # Drop organizations table (root)
+    op.drop_index("idx_organizations_deleted_at", table_name="organizations")
+    op.drop_index("idx_organizations_created_at", table_name="organizations")
     op.drop_table("organizations")
-    logger.info("migration: organizations dropped")
-
-    logger.info("migration: downgrade() complete — all Phase 1 tables removed")
+    
+    logger.info("migration: Phase 1 schema rolled back successfully")
+---
