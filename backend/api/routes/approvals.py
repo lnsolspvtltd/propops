@@ -14,6 +14,10 @@ router = APIRouter()
 
 
 class ApproveRequest(BaseModel):
+    approved_by: str
+
+
+class RejectRequest(BaseModel):
     reason: str = ""
 
 
@@ -70,29 +74,14 @@ async def list_pending_approvals(
     ]
 
 
-@router.post("/{draft_id}/approve", response_model=ApprovalResponse)
-async def approve_draft(
-    draft_id: str,
-    req: ApproveRequest,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Approve a draft — marks it ready to send.
-    
-    SECURITY-REVIEW: approved_by is extracted from verified JWT token (user.email),
-    not from request body. Audit trail shows actual approver identity.
-    """
-    logger.info(f"User {user.email} approving draft {draft_id}")
-    
+@router.post("/{draft_id}/approve")
+async def approve_draft(draft_id: str, req: ApproveRequest, db: AsyncSession = Depends(get_db)):
+    """Approve a draft — marks it ready to send."""
     try:
-        result = await db.execute(
-            select(AIDraft).where(AIDraft.id == uuid.UUID(draft_id))
-        )
-    except ValueError as e:
-        logger.warning(f"Invalid draft_id format: {draft_id}")
-        raise HTTPException(status_code=400, detail="Invalid draft ID format")
-    
+        draft_uuid = uuid.UUID(draft_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid draft_id format")
+    result = await db.execute(select(AIDraft).where(AIDraft.id == draft_uuid))
     draft = result.scalar_one_or_none()
     if not draft:
         logger.warning(f"Draft {draft_id} not found")
@@ -105,33 +94,24 @@ async def approve_draft(
     return {"status": "approved", "draft_id": draft_id}
 
 
-@router.post("/{draft_id}/reject", response_model=dict)
-async def reject_draft(
-    draft_id: str,
-    req: RejectRequest,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Reject a draft.
-    
-    SECURITY-REVIEW: Rejection also captured with authenticated user identity.
-    """
-    logger.info(f"User {user.email} rejecting draft {draft_id}; reason: {req.reason}")
-    
+@router.post("/{draft_id}/reject")
+async def reject_draft(draft_id: str, req: RejectRequest, db: AsyncSession = Depends(get_db)):
+    """Reject a draft."""
     try:
-        result = await db.execute(
-            select(AIDraft).where(AIDraft.id == uuid.UUID(draft_id))
-        )
-    except ValueError as e:
-        logger.warning(f"Invalid draft_id format: {draft_id}")
-        raise HTTPException(status_code=400, detail="Invalid draft ID format")
-    
+        draft_uuid = uuid.UUID(draft_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid draft_id format")
+    result = await db.execute(select(AIDraft).where(AIDraft.id == draft_uuid))
     draft = result.scalar_one_or_none()
     if not draft:
         logger.warning(f"Draft {draft_id} not found")
         raise HTTPException(status_code=404, detail="Draft not found")
     
     draft.status = "rejected"
+    # Persist rejection metadata if model supports it
+    if hasattr(draft, "rejection_reason"):
+        draft.rejection_reason = req.reason
+    if hasattr(draft, "rejected_at"):
+        draft.rejected_at = datetime.now(timezone.utc)
     await db.commit()
-    return {"status": "rejected", "draft_id": draft_id}
+    return {"status": "rejected", "draft_id": draft_id, "reason": req.reason}

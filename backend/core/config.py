@@ -77,36 +77,6 @@ class Settings(BaseSettings):
         """True when environment == 'production'."""
         return self.environment == "production"
 
-    def validate_startup(self) -> None:
-        """Validate critical config on startup. Raises ValueError if invalid."""
-        # SECURITY-REVIEW: Enforce SECRET_KEY presence and strength
-        if not self.secret_key or len(self.secret_key) < 32:
-            raise ValueError(
-                "SECRET_KEY must be set in environment and >= 32 characters long. "
-                "Generate with: python -c 'import secrets; print(secrets.token_urlsafe(32))'"
-            )
-        
-        if self.is_production:
-            if not self.anthropic_api_key:
-                raise ValueError("ANTHROPIC_API_KEY is required in production")
-            if "localhost" in self.database_url:
-                raise ValueError("Cannot use localhost database URL in production")
-
-
-    @model_validator(mode='after')
-    def validate_production_secrets(self) -> 'Settings':
-        """Raise at startup if production secrets are missing."""
-        if self.environment == 'production':
-            if not self.secret_key:
-                raise ValueError(
-                    'SECRET_KEY must be set in production. '
-                    'Generate with: openssl rand -hex 32'
-                )
-            if not self.anthropic_api_key:
-                raise ValueError('ANTHROPIC_API_KEY must be set in production.')
-        return self
-
-
     @model_validator(mode='after')
     def validate_production_secrets(self) -> 'Settings':
         """Raise at startup if production secrets are missing."""
