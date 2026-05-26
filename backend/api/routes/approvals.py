@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from backend.core.database import get_db
 from backend.models.incident import AIDraft, Incident
+from backend.core.auth import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

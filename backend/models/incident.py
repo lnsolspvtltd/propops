@@ -43,6 +43,7 @@ class Unit(Base):
 
 
 class Incident(Base):
+    """Core incident/thread model."""
     __tablename__ = "incidents"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     org_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False)
@@ -67,6 +68,7 @@ class Incident(Base):
 
 
 class AIDraft(Base):
+    """AI-generated draft response awaiting approval."""
     __tablename__ = "ai_drafts"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     incident_id = Column(UUID(as_uuid=True), ForeignKey("incidents.id"), nullable=False)
