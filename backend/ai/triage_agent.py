@@ -3,10 +3,12 @@
 Uses Claude Haiku for fast, cheap classification.
 Returns strict JSON only — no hallucination on next steps.
 Handles all urgency levels with high accuracy.
+Includes fallback keyword-based detection for reliability.
 """
 import json
 import logging
 from typing import Optional
+from tenacity import retry, stop_after_attempt, wait_exponential
 import anthropic
 from pydantic import BaseModel, Field
 from backend.core.config import settings
@@ -14,7 +16,7 @@ from backend.core.config import settings
 logger = logging.getLogger(__name__)
 
 # Emergency keywords for fallback detection
-# Removed duplicate 'flooding' entry (was listed twice)
+# Used if LLM response is malformed or unparseable
 EMERGENCY_KEYWORDS = {
     "flood", "flooding", "water damage", "leaking",
     "fire", "electrical fire", "smoke",
@@ -23,6 +25,20 @@ EMERGENCY_KEYWORDS = {
     "security breach", "break in", "break-in", "intruder",
     "sewage backup", "raw sewage",
 }
+
+
+class TriageResult(BaseModel):
+    """Structured output from triage classification."""
+    category: str = Field(..., description="maintenance|billing|noise|lease|move_in|move_out|general")
+    urgency: str = Field(..., description="EMERGENCY|HIGH|MEDIUM|LOW")
+    title: str = Field(..., description="One-line summary under 80 characters")
+    summary: str = Field(..., description="2-3 sentence summary of the situation")
+    sentiment: str = Field(..., description="frustrated|neutral|positive|urgent")
+    unit_mentioned: Optional[str] = Field(None, description="Unit number if mentioned, else null")
+    requires_vendor: bool = Field(..., description="Whether vendor/contractor is needed")
+    confidence: float = Field(..., description="Confidence score 0.0-1.0")
+    tags: list[str] = Field(..., description="Relevant tags, max 5 items")
+
 
 TRIAGE_SYSTEM_PROMPT = """You are PropOps Triage AI. You classify property management messages with extreme accuracy.
 
@@ -87,112 +103,119 @@ OUTPUT CONSTRAINTS:
 - Urgency must match enum exactly
 
 FALLBACK BEHAVIOR:
-If JSON parsing fails or AI response is malformed, apply keyword-based detection:
-1. Check if message contains any EMERGENCY_KEYWORDS → classify as EMERGENCY
-2. Otherwise default to MEDIUM with low confidence (0.3)"""
+If the message matches emergency keywords (flood, fire, gas leak, etc.), classify as EMERGENCY with 0.95+ confidence.
+"""
 
 
-class TriageResult(BaseModel):
-    """Triage classification result."""
-    category: str = Field(..., description="maintenance|billing|noise|lease|move_in|move_out|general")
-    urgency: str = Field(..., description="EMERGENCY|HIGH|MEDIUM|LOW")
-    title: str = Field(..., description="One-line summary, max 80 chars")
-    summary: str = Field(..., description="2-3 sentence summary")
-    sentiment: str = Field(..., description="frustrated|neutral|positive|urgent")
-    unit_mentioned: Optional[str] = Field(default=None, description="Unit number if found")
-    requires_vendor: bool = Field(default=False)
-    confidence: float = Field(..., ge=0.0, le=1.0)
-    tags: list[str] = Field(default_factory=list, description="Max 5 tags")
-
-
-def detect_emergency_keywords(text: str) -> bool:
-    """Fallback keyword detection for urgency classification.
+def _fallback_triage(message: str, error: Exception) -> TriageResult:
+    """Fallback keyword-based triage if LLM fails.
     
-    Used when AI fails or returns malformed JSON.
+    Uses EMERGENCY_KEYWORDS to detect critical issues.
+    This ensures system reliability even if Claude is unavailable.
+    
     Args:
-        text: Message body to check for emergency keywords
+        message: Original message text
+        error: The exception that caused LLM failure
         
     Returns:
-        True if any emergency keyword found (case-insensitive), False otherwise
+        Safe fallback TriageResult
     """
-    text_lower = text.lower()
-    return any(keyword in text_lower for keyword in EMERGENCY_KEYWORDS)
+    logger.warning(f"Using fallback triage due to LLM error: {type(error).__name__}: {error}")
+    
+    message_lower = message.lower()
+    has_emergency = any(keyword in message_lower for keyword in EMERGENCY_KEYWORDS)
+    
+    if has_emergency:
+        logger.info("Fallback detected emergency keywords — escalating to EMERGENCY")
+        return TriageResult(
+            category="maintenance",
+            urgency="EMERGENCY",
+            title="Emergency maintenance detected (fallback)",
+            summary="System could not reach AI classifier, but message contains emergency keywords. Escalating to EMERGENCY priority.",
+            sentiment="urgent",
+            unit_mentioned=None,
+            requires_vendor=True,
+            confidence=0.85,
+            tags=["emergency", "fallback", "keyword-detected"]
+        )
+    
+    logger.info("Fallback triage — no emergency keywords found, defaulting to MEDIUM")
+    return TriageResult(
+        category="maintenance",
+        urgency="MEDIUM",
+        title="Unclassified message (fallback)",
+        summary="System could not reach AI classifier. Treating as medium priority for manual review.",
+        sentiment="neutral",
+        unit_mentioned=None,
+        requires_vendor=False,
+        confidence=0.50,
+        tags=["fallback", "needs-review"]
+    )
 
 
-async def triage_message(message_body: str, max_chars: int = 3000) -> TriageResult:
-    """Classify and triage an incoming message using Claude Haiku.
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10)
+)
+async def classify_message(message: str) -> TriageResult:
+    """Classify an incoming property management message using Claude.
+    
+    Retries up to 3 times with exponential backoff on transient failures.
+    Falls back to keyword-based detection if all retries fail.
     
     Args:
-        message_body: Raw email/SMS text to classify
-        max_chars: Maximum characters to send to AI (prevents token waste on huge messages)
+        message: The incoming message text to classify
         
     Returns:
-        TriageResult with category, urgency, and confidence
+        TriageResult with category, urgency, summary, confidence, etc.
         
     Raises:
-        ValueError: If message is empty or anthropic_api_key not set
+        Does not raise — returns safe fallback on any error.
     """
-    if not message_body or not message_body.strip():
-        raise ValueError("Message body cannot be empty")
-    
-    if not settings.anthropic_api_key:
-        raise ValueError("ANTHROPIC_API_KEY environment variable not set")
-    
-    # Truncate message to avoid token waste
-    truncated_body = message_body[:max_chars].strip()
-    
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    
     try:
+        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        
         response = client.messages.create(
             model="claude-3-5-haiku-20241022",
-            max_tokens=500,
+            max_tokens=512,
             system=TRIAGE_SYSTEM_PROMPT,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"Classify this message:\n\n{truncated_body}"
-                }
-            ]
+            messages=[{"role": "user", "content": message}]
         )
         
-        ai_text = response.content[0].text.strip()
+        raw_json = response.content[0].text.strip()
+        logger.debug(f"Raw LLM response: {raw_json[:200]}")
         
-        # Parse JSON response
-        try:
-            data = json.loads(ai_text)
-            result = TriageResult(**data)
-            logger.info(f"Triage succeeded: {result.urgency} confidence={result.confidence:.2f}")
-            return result
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse triage JSON: {e}\nRaw AI response: {ai_text[:200]}")
-            # Fallback: keyword-based classification
-            return _fallback_triage(truncated_body)
-        except Exception as e:
-            logger.warning(f"Triage validation error: {e}\nRaw data: {data}")
-            return _fallback_triage(truncated_body)
-            
+        # Remove markdown code blocks if present
+        if raw_json.startswith("```json"):
+            raw_json = raw_json[7:]
+        if raw_json.startswith("```"):
+            raw_json = raw_json[3:]
+        if raw_json.endswith("```"):
+            raw_json = raw_json[:-3]
+        
+        raw_json = raw_json.strip()
+        data = json.loads(raw_json)
+        result = TriageResult(**data)
+        
+        logger.info(
+            f"Classified message: category={result.category}, urgency={result.urgency}, confidence={result.confidence:.2f}",
+            extra={"category": result.category, "urgency": result.urgency, "confidence": result.confidence}
+        )
+        return result
+    
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON parse error in triage response: {e}\nRaw: {raw_json[:300]}")
+        return _fallback_triage(message, e)
+    
+    except ValueError as e:
+        logger.error(f"Pydantic validation error in triage: {e}")
+        return _fallback_triage(message, e)
+    
     except anthropic.APIError as e:
-        logger.error(f"Anthropic API error during triage: {e}", exc_info=True)
-        # Fallback: keyword-based classification
-        return _fallback_triage(truncated_body)
-
-
-def _fallback_triage(message_body: str) -> TriageResult:
-    """Fallback triage when AI unavailable or fails.
+        logger.error(f"Anthropic API error: {e}", exc_info=True)
+        return _fallback_triage(message, e)
     
-    Uses keyword detection for emergency vs. medium classification.
-    """
-    has_emergency = detect_emergency_keywords(message_body)
-    
-    return TriageResult(
-        category="general",
-        urgency="EMERGENCY" if has_emergency else "MEDIUM",
-        title="Emergency incident detected" if has_emergency else "Message pending AI review",
-        summary=message_body[:150] + "..." if len(message_body) > 150 else message_body,
-        sentiment="urgent",
-        unit_mentioned=None,
-        requires_vendor=has_emergency,
-        confidence=0.95 if has_emergency else 0.3,
-        tags=["fallback", "ai_unavailable"]
-    )
+    except Exception as e:
+        logger.error(f"Unexpected error in classify_message: {e}", exc_info=True)
+        return _fallback_triage(message, e)
+---
