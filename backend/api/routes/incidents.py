@@ -114,13 +114,8 @@ async def get_incident(
     
     drafts_q = await db.execute(select(AIDraft).where(AIDraft.incident_id == inc.id))
     drafts = [
-        {
-            "id": str(d.id),
-            "subject": d.subject,
-            "body": d.body,
-            "status": d.status,
-            "created_at": d.created_at.isoformat() if d.created_at else None
-        }
+        {"id": str(d.id), "draft_text": d.draft_text, "status": d.status,
+         "created_at": d.created_at.isoformat() if d.created_at else None}
         for d in drafts_q.scalars().all()
     ]
     
@@ -138,4 +133,3 @@ async def get_incident(
         "created_at": inc.created_at.isoformat() if inc.created_at else "",
         "drafts": drafts
     }
----
