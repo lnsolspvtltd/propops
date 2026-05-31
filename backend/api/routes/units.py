@@ -1,32 +1,47 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, ValidationError
+"""Unit (tenant_units) management endpoints."""
+import logging
+import uuid
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, status
+from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.api.dependencies import get_db
-from backend.models import Unit
+from backend.core.database import get_db
+from backend.models.tenant import TenantUnit
 
-router = APIRouter(prefix="/api/v1", tags=["units"])
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/units", tags=["units"])
+
 
 class UnitCreate(BaseModel):
+    org_id: uuid.UUID
     label: str
-    address: str
+    address: str | None = None
 
-@router.get("/units")
-async def list_units(db: AsyncSession = Depends(get_db)):
-    units = await db.execute(select(Unit).filter_by(deleted_at=None))
-    return {"units": [unit.model_dump() for unit in units.scalars().all()]}
 
-@router.post("/units")
-async def create_unit(unit_data: UnitCreate, db: AsyncSession = Depends(get_db)):
-    try:
-        unit = Unit(
-            label=unit_data.label,
-            address=unit_data.address
-        )
-        db.add(unit)
-        await db.commit()
-        await db.refresh(unit)
+class UnitOut(BaseModel):
+    id: str
+    org_id: str
+    label: str
+    address: str | None
+    created_at: datetime
 
-        return {"id": unit.id, "label": unit.label}
-    except ValidationError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    model_config = {"from_attributes": True}
+
+
+@router.get("/", response_model=list[UnitOut])
+async def list_units(org_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> list[UnitOut]:
+    result = await db.execute(
+        select(TenantUnit).where(TenantUnit.org_id == org_id).order_by(TenantUnit.label)
+    )
+    return [UnitOut.model_validate(u) for u in result.scalars().all()]
+
+
+@router.post("/", response_model=UnitOut, status_code=status.HTTP_201_CREATED)
+async def create_unit(body: UnitCreate, db: AsyncSession = Depends(get_db)) -> UnitOut:
+    unit = TenantUnit(id=uuid.uuid4(), org_id=body.org_id, label=body.label, address=body.address)
+    db.add(unit)
+    await db.flush()
+    return UnitOut.model_validate(unit)
