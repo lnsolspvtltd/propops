@@ -41,7 +41,6 @@ async def revoke_token_jti(
     if existing.scalar_one_or_none():
         return
     db.add(RevokedToken(jti=jti, expires_at=expires_at))
-    await db.flush()
 
 
 async def purge_expired_revocations(db: AsyncSession) -> None:

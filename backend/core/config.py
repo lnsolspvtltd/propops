@@ -53,10 +53,9 @@ class Settings(BaseSettings):
     # Encryption (org credentials)
     fernet_key: str = ""
 
-    # Demo login (development only)
-    enable_demo_login: bool = False  # must be explicitly enabled; never on by default
+    # Demo login (development) — empty default forces explicit .env in non-trivial deploys
     demo_email: str = "demo@propops.app"
-    demo_password: str = "demo"
+    demo_password: str = ""
     demo_org_id: str = "00000000-0000-0000-0000-000000000001"
 
     # Optional integrations

@@ -20,6 +20,10 @@ def upgrade() -> None:
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
     )
     op.create_index("idx_revoked_tokens_expires_at", "revoked_tokens", ["expires_at"])
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_revoked_tokens_expires_notnull "
+        "ON revoked_tokens (expires_at) WHERE expires_at IS NOT NULL"
+    )
 
 
 def downgrade() -> None:

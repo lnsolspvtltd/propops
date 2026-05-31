@@ -20,3 +20,6 @@ class RevokedToken(Base):
     expires_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (Index("idx_revoked_tokens_expires_at", "expires_at"),)
+
+    def __repr__(self) -> str:
+        return f"<RevokedToken jti={self.jti!r} expires_at={self.expires_at!r}>"

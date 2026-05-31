@@ -83,5 +83,13 @@ async def init_db() -> None:
 
     async with AsyncSessionLocal() as session:
         await session.execute(text("SELECT 1"))
+        try:
+            from backend.core.auth import purge_expired_revocations
+
+            await purge_expired_revocations(session)
+            await session.commit()
+        except Exception as e:
+            logger.warning("Revoked-token purge skipped (table may not exist yet): %s", e)
+            await session.rollback()
     logger.info("Database connectivity verified (Alembic owns schema migrations)")
 

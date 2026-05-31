@@ -56,7 +56,11 @@ class CountResponse(BaseModel):
 
 
 def _org_filter(user: dict[str, Any]):
-    """Return org_id UUID filter when user is org-scoped (non-global approver)."""
+    """Return org_id UUID filter when user is org-scoped.
+
+    Global roles (founder/admin/approver) intentionally skip org filter — single-tenant
+    beta where approvers see all pending drafts. Tighten when multi-tenant RBAC lands.
+    """
     role = user.get("role", "user")
     org_id = user.get("org_id")
     if role in APPROVER_ROLES or not org_id:

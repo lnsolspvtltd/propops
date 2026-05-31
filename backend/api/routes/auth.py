@@ -87,10 +87,10 @@ class LoginResponse(BaseModel):
     In production, swap this for a real user table lookup.
     """
     if not settings.demo_email or not settings.demo_password:
-        logger.error("Missing required demo credentials in settings")
+        logger.error("Missing demo credentials — set DEMO_EMAIL and DEMO_PASSWORD in .env")
         raise HTTPException(
-            status_code=500,
-            detail={"error": "Server configuration error"},
+            status_code=503,
+            detail={"error": "Demo login not configured"},
         )
 
     email = req.email.strip().lower()
@@ -103,11 +103,7 @@ class LoginResponse(BaseModel):
 
     password_ok = secrets.compare_digest(req.password, settings.demo_password)
     email_ok = email == settings.demo_email.strip().lower()
-    is_valid = (email_ok and password_ok) or (
-        settings.environment == "development" and password_ok
-    )
-
-    if not is_valid:
+    if not (email_ok and password_ok):
         raise HTTPException(status_code=401, detail={"error": "Invalid credentials"})
 
     expire = datetime.now(timezone.utc) + timedelta(hours=TOKEN_EXPIRE_HOURS)
@@ -296,6 +292,7 @@ async def logout(
                 )
                 if jti:
                     await revoke_token_jti(jti, db, expires_at=expires_at)
+                    await db.commit()
             except JWTError:
                 logger.warning("Logout: could not decode token for revocation")
     return {"status": "logged_out"}
