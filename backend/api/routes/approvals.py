@@ -76,7 +76,7 @@ async def list_pending_approvals(db: AsyncSession = Depends(get_db)) -> list[Dra
             body=d.body or "",
             recipient=d.recipient_email or "",
             created_at=d.created_at.isoformat() if d.created_at else "",
-            raw_message=inc.raw_message,
+            raw_message=inc.raw_message or None,
         )
         for d, inc in rows
     ]
