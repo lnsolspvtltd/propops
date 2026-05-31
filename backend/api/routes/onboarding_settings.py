@@ -1,6 +1,7 @@
 """Organisation settings update endpoint (Phase 3 addition)."""
 import logging
 import uuid
+import imaplib
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -10,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.core.database import get_db
 from backend.core.encryption import encrypt
 from backend.models.organisation import Organisation
-from backend.api.routes.onboarding import _check_imap, OrganisationResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
@@ -26,6 +26,23 @@ class SettingsUpdate(BaseModel):
     smtp_username: str | None = None
     smtp_password: str | None = None
     polling_active: bool | None = None
+
+
+class OrganisationResponse(BaseModel):
+    org_id: str
+    name: str
+    polling_active: bool
+    imap_connected: bool
+
+
+def _check_imap(host: str, port: int, username: str, password: str) -> tuple[bool, str]:
+    """Test IMAP connection and credentials."""
+    try:
+        with imaplib.IMAP4_SSL(host, port) as imap:
+            imap.login(username, password)
+        return True, ""
+    except Exception as e:
+        return False, str(e)
 
 
 @router.put("/settings", response_model=OrganisationResponse)
