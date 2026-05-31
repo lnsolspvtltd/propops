@@ -160,7 +160,7 @@ export default function ApprovalQueue() {
               </button>
               <Link href="/incidents"
                 className="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 rounded text-gray-300 transition-colors">
-                Incidents ->
+                Incidents -&gt;
               </Link>
             </div>
           </div>
@@ -237,7 +237,7 @@ export default function ApprovalQueue() {
           <div className="flex-1 overflow-y-auto p-5">
             {activeTab === "original" ? (
               <div>
-                <div className="mb-3 text-xs text-gray-500 font-semibold uppercase tracking-wider">Tenant's original message</div>
+                <div className="mb-3 text-xs text-gray-500 font-semibold uppercase tracking-wider">Tenant&apos;s original message</div>
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 text-gray-200 text-sm whitespace-pre-wrap leading-relaxed font-mono min-h-32">
                   {selected.raw_message || "(No original message available — email body was not captured)"}
                 </div>
