@@ -1,23 +1,21 @@
-from cryptography.fernet import Fernet
+"""Fernet symmetric encryption for storing IMAP/SMTP passwords."""
 import os
 
+from cryptography.fernet import Fernet
+
+
+def _key() -> bytes:
+    k = os.environ.get("FERNET_KEY", "")
+    if not k:
+        raise RuntimeError("FERNET_KEY environment variable is not set")
+    return k.encode()
+
+
 def encrypt(plaintext: str) -> str:
-    """Encrypt plaintext using Fernet."""
-    key = os.getenv('FERNET_KEY')
-    if not key:
-        raise ValueError("FERNET_KEY environment variable is missing.")
-    
-    f = Fernet(key)
-    encrypted = f.encrypt(plaintext.encode())
-    return encrypted.decode()
+    """Encrypt a string with Fernet. Key from FERNET_KEY env var."""
+    return Fernet(_key()).encrypt(plaintext.encode()).decode()
+
 
 def decrypt(ciphertext: str) -> str:
-    """Decrypt ciphertext using Fernet."""
-    key = os.getenv('FERNET_KEY')
-    if not key:
-        raise ValueError("FERNET_KEY environment variable is missing.")
-    
-    f = Fernet(key)
-    decrypted = f.decrypt(ciphertext.encode())
-    return decrypted.decode()
----
+    """Decrypt a Fernet-encrypted string."""
+    return Fernet(_key()).decrypt(ciphertext.encode()).decode()
