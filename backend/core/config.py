@@ -53,9 +53,13 @@ class Settings(BaseSettings):
     # Encryption (org credentials)
     fernet_key: str = ""
 
-    # Demo login (development)
+    # Demo login (development only)
+    enable_demo_login: bool = True
     demo_email: str = "demo@propops.app"
     demo_password: str = "demo"
+
+    # Frontend
+    frontend_url: str = "http://localhost:3000"
 
     # Optional integrations
     twilio_account_sid: str = ""

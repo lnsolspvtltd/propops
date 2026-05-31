@@ -113,4 +113,28 @@ async def get_current_user(
             status_code=500,
             detail="Internal error validating token"
         )
----
+
+
+def assert_org(user: Dict[str, Any], requested_org_id) -> None:
+    """Raise 403 if the JWT org_id does not match requested_org_id.
+
+    Call this inside any route that scopes data to a single organisation to
+    prevent cross-tenant data leakage.
+
+    Args:
+        user: Dict returned by get_current_user dependency.
+        requested_org_id: The org UUID from the URL path or request body.
+
+    Raises:
+        HTTPException 403: when org_id in the token does not match.
+    """
+    if str(user.get("org_id", "")) != str(requested_org_id):
+        logger.warning(
+            "assert_org: token org_id=%s does not match requested_org_id=%s",
+            user.get("org_id"),
+            requested_org_id,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "org_mismatch"},
+        )

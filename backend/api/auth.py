@@ -1,5 +1,6 @@
 """Authentication and JWT token handling."""
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import JWTError, jwt
@@ -16,7 +17,8 @@ class TokenPayload(BaseModel):
     """JWT token payload structure."""
     user_id: str
     email: str
-    role: str  # "admin" | "manager" | "user"
+    org_id: Optional[str] = None
+    role: str  # "admin" | "manager" | "member"
     exp: datetime
 
 
@@ -24,18 +26,25 @@ class User(BaseModel):
     """Authenticated user identity."""
     user_id: str
     email: str
+    org_id: Optional[str] = None
     role: str
 
 
-def create_access_token(user_id: str, email: str, role: str = "user") -> str:
+def create_access_token(
+    user_id: str,
+    email: str,
+    org_id: Optional[str] = None,
+    role: str = "member",
+) -> str:
     """
     Create a JWT access token.
-    
+
     Args:
         user_id: Unique user identifier
         email: User email address
-        role: User role (admin, manager, user)
-    
+        org_id: Organisation UUID string (scopes token to a tenant)
+        role: User role (admin, manager, member)
+
     Returns:
         Encoded JWT token string
     """
@@ -43,7 +52,9 @@ def create_access_token(user_id: str, email: str, role: str = "user") -> str:
     payload = {
         "user_id": user_id,
         "email": email,
+        "org_id": org_id,
         "role": role,
+        "jti": str(uuid.uuid4()),
         "exp": expires,
     }
     token = jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
@@ -69,7 +80,8 @@ def verify_token(token: str) -> TokenPayload:
         return TokenPayload(
             user_id=payload["user_id"],
             email=payload["email"],
-            role=payload.get("role", "user"),
+            org_id=payload.get("org_id"),
+            role=payload.get("role", "member"),
             exp=datetime.fromtimestamp(payload["exp"], tz=timezone.utc),
         )
     except JWTError as e:
@@ -103,6 +115,7 @@ async def get_current_user(credentials: Optional[HTTPAuthCredentials] = Depends(
     return User(
         user_id=token_payload.user_id,
         email=token_payload.email,
+        org_id=token_payload.org_id,
         role=token_payload.role,
     )
 
