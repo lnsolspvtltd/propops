@@ -49,6 +49,8 @@ export default function SettingsPage() {
       if (form.imap_password) body.imap_password = form.imap_password;
       if (form.smtp_host) body.smtp_host = form.smtp_host;
       if (form.smtp_port) body.smtp_port = Number(form.smtp_port);
+      if (form.smtp_username) body.smtp_username = form.smtp_username;
+      if (form.smtp_password) body.smtp_password = form.smtp_password;
       body.polling_active = form.polling_active;
       await apiFetch("/api/v1/onboarding/settings", { method: "PUT", body: JSON.stringify(body) });
       setSaved(true);
