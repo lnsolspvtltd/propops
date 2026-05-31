@@ -52,7 +52,7 @@ export default function ApprovalQueue() {
     try {
       const res = await fetch(`${API}/api/v1/approvals/pending`, {
         signal: abortRef.current.signal,
-        headers: { Accept: "application/json" },
+        headers: { Accept: 'application/json' },
       });
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       const data: PendingDraft[] = await res.json();
