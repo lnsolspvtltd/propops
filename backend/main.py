@@ -25,24 +25,18 @@ async def lifespan(app: FastAPI):
         validate_startup_settings()
     except SystemExit:
         raise
-
     try:
         await init_db()
         logger.info("Database initialized")
     except Exception as e:
         logger.critical(f"Database init failed: {e}", exc_info=True)
         raise
-
     try:
         await start_inbox_poller()
         logger.info("Inbox poller started")
     except Exception as e:
-        logger.warning(
-            f"Inbox poller failed to start: {e}. Continuing.", exc_info=True
-        )
-
+        logger.warning(f"Inbox poller failed to start: {e}. Continuing.", exc_info=True)
     yield
-
     logger.info("PropOps shutting down...")
     try:
         await stop_inbox_poller()
@@ -67,12 +61,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Phase 1 - core pipeline
+# Phase 1
 app.include_router(health.router, prefix="/api/v1", tags=["health"])
 app.include_router(inbox.router, prefix="/api/v1/inbox", tags=["inbox"])
 app.include_router(incidents.router, prefix="/api/v1/incidents", tags=["incidents"])
 
-# Phase 2 routes (optional - present when Phase 2 PRs are merged)
+# Phase 2 (optional - present after Phase 2 PRs merge)
 try:
     from backend.api.routes import dashboard, tenants, units, vendors, onboarding, incidents_assign
     app.include_router(dashboard.router, prefix="/api/v1")
@@ -86,7 +80,8 @@ except ImportError as e:
     logger.info("Phase 2 routes not yet available: %s", e)
 
 # Phase 3 - auth, approvals (with count), settings, demo
-from backend.api.routes import approvals  # re-import Phase3 version (has /count endpoint)
+app.include_router(approvals.router)  # /api/v1/approvals
+
 try:
     from backend.api.routes import auth as auth_routes
     app.include_router(auth_routes.router)
@@ -94,15 +89,12 @@ try:
 except ImportError:
     pass
 
-app.include_router(approvals.router)  # /api/v1/approvals — has /count, /pending, approve, reject
-
 try:
     from backend.api.routes import onboarding_settings
     app.include_router(onboarding_settings.router, prefix="/api/v1")
 except ImportError:
     pass
 
-# Demo routes - development only
 try:
     if get_settings().environment == "development":
         from backend.api.routes import demo
