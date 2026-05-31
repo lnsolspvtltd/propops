@@ -16,51 +16,6 @@ from backend.core.database import get_db
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
-# Stable sentinel UUID for demo JWT "sub" claim — not a real user UUID
-_DEMO_SUB = "00000000-0000-0000-0000-000000000099"
-
-# bcrypt context — auto-handles future algorithm migrations
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-# Pre-computed bcrypt hash at cost 12 — used for constant-time dummy verification
-# to prevent email enumeration via response time. The plaintext is irrelevant.
-_DUMMY_HASH = "$2b$12$eixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW"
-
-
-# ---------------------------------------------------------------------------
-# Pydantic schemas
-# ---------------------------------------------------------------------------
-
-
-class RegisterRequest(BaseModel):
-    """Payload for POST /register."""
-
-    email: EmailStr  # validates RFC 5322 format
-    password: str
-    org_id: uuid.UUID
-    role: Literal["member", "manager"] = "member"  # admin only via invite/migration
-
-    @field_validator("password")
-    @classmethod
-    def password_min_length(cls, v: str) -> str:
-        if len(v) < 8:
-            raise ValueError("password must be at least 8 characters")
-        return v
-
-    @field_validator("email")
-    @classmethod
-    def email_lowercase(cls, v: str) -> str:
-        return v.strip().lower()
-
-
-class RegisterResponse(BaseModel):
-    """Registration success — never includes the password."""
-
-    id: uuid.UUID
-    email: str
-    org_id: uuid.UUID
-    role: str
-
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -106,7 +61,9 @@ class LoginResponse(BaseModel):
     if not (email_ok and password_ok):
         raise HTTPException(status_code=401, detail={"error": "Invalid credentials"})
 
-    expire = datetime.now(timezone.utc) + timedelta(hours=TOKEN_EXPIRE_HOURS)
+    expire = datetime.now(timezone.utc) + timedelta(
+        minutes=settings.jwt_access_token_expire_minutes
+    )
     payload = {
         "sub": email,
         "email": email,
@@ -116,7 +73,7 @@ class LoginResponse(BaseModel):
         "org_id": settings.demo_org_id,
         "role": "founder",
     }
-    token = jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
+    token = jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
 
     logger.info("Login: %s", email)
     return LoginResponse(
@@ -283,7 +240,10 @@ async def logout(
         if len(parts) == 2 and parts[0].lower() == "bearer":
             try:
                 payload = jwt.decode(
-                    parts[1], settings.secret_key, algorithms=[ALGORITHM]
+                    parts[1],
+                    settings.secret_key,
+                    algorithms=[settings.jwt_algorithm],
+                    options={"verify_exp": False},
                 )
                 jti = payload.get("jti")
                 exp = payload.get("exp")
@@ -292,7 +252,6 @@ async def logout(
                 )
                 if jti:
                     await revoke_token_jti(jti, db, expires_at=expires_at)
-                    await db.commit()
             except JWTError:
                 logger.warning("Logout: could not decode token for revocation")
     return {"status": "logged_out"}

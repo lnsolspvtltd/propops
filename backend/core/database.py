@@ -87,7 +87,6 @@ async def init_db() -> None:
             from backend.core.auth import purge_expired_revocations
 
             await purge_expired_revocations(session)
-            await session.commit()
         except Exception as e:
             logger.warning("Revoked-token purge skipped (table may not exist yet): %s", e)
             await session.rollback()

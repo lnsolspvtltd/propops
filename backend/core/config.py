@@ -74,6 +74,16 @@ class Settings(BaseSettings):
             logger.warning("secret_key is empty in development — set SECRET_KEY in .env")
         return v
 
+    @field_validator("demo_password", mode="after")
+    @classmethod
+    def warn_empty_demo_password(cls, v: str, info) -> str:
+        environment = info.data.get("environment", "development")
+        if environment == "development" and not v:
+            logger.warning(
+                "demo_password is empty — set DEMO_PASSWORD in .env or login will return 503"
+            )
+        return v
+
     @model_validator(mode="after")
     def validate_demo_config(self) -> "Settings":
         if self.enable_demo_login:

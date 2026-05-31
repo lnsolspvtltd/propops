@@ -8,6 +8,7 @@ SECURITY-REVIEW: This module handles user authentication.
 - User info is extracted from verified token
 - Invalid/expired tokens return 401 Unauthorized
 - Revoked JTIs are checked against the DB blocklist (multi-worker safe)
+- Hot-path positive cache avoids a DB round-trip on repeat revoked checks
 """
 import logging
 from datetime import datetime, timezone
@@ -24,11 +25,20 @@ from backend.models.revoked_token import RevokedToken
 
 logger = logging.getLogger(__name__)
 
+# Process-local positive cache: revoked JTIs only (cleared on restart).
+# Multi-worker: each worker has its own cache; DB remains source of truth.
+_revoked_jti_cache: set[str] = set()
+
 
 async def is_jti_revoked(jti: str, db: AsyncSession) -> bool:
     """Return True if jti is in the DB revocation blocklist."""
+    if jti in _revoked_jti_cache:
+        return True
     result = await db.execute(select(RevokedToken.jti).where(RevokedToken.jti == jti))
-    return result.scalar_one_or_none() is not None
+    revoked = result.scalar_one_or_none() is not None
+    if revoked:
+        _revoked_jti_cache.add(jti)
+    return revoked
 
 
 async def revoke_token_jti(
@@ -39,34 +49,25 @@ async def revoke_token_jti(
     """Mark a token jti as revoked (logout / stolen token). Persists to DB."""
     existing = await db.execute(select(RevokedToken).where(RevokedToken.jti == jti))
     if existing.scalar_one_or_none():
+        _revoked_jti_cache.add(jti)
         return
     db.add(RevokedToken(jti=jti, expires_at=expires_at))
+    _revoked_jti_cache.add(jti)
+    await db.commit()
 
 
 async def purge_expired_revocations(db: AsyncSession) -> None:
     """Remove expired entries from the blocklist (best-effort housekeeping)."""
     now = datetime.now(timezone.utc)
     await db.execute(delete(RevokedToken).where(RevokedToken.expires_at < now))
+    await db.commit()
 
 
 async def get_current_user(
     authorization: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Extract and validate current user from JWT token in Authorization header.
-
-    Expected header format: Authorization: Bearer <token>
-
-    Args:
-        authorization: Authorization header value (injected by FastAPI)
-        db: Database session for jti blocklist lookup
-
-    Returns:
-        dict with user info (id, email, org_id, role)
-
-    Raises:
-        HTTPException 401: Missing or invalid token
-    """
+    """Extract and validate current user from JWT token in Authorization header."""
     if not authorization:
         logger.warning("get_current_user: Missing Authorization header")
         raise HTTPException(
@@ -95,7 +96,7 @@ async def get_current_user(
         payload = decode(
             token,
             settings.secret_key,
-            algorithms=["HS256"],
+            algorithms=[settings.jwt_algorithm],
         )
         jti = payload.get("jti")
         if jti and await is_jti_revoked(jti, db):

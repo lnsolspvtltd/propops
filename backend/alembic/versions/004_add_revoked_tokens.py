@@ -2,6 +2,8 @@
 
 Revision ID: 004
 Revises: 003
+
+Note: partial index below is PostgreSQL-specific (PropOps production DB).
 """
 from alembic import op
 import sqlalchemy as sa
