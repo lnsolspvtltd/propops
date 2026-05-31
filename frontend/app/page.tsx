@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { AlertCircle, RefreshCw, Mail, Clock, CheckCircle2, XCircle } from "lucide-react";
+import DemoPanel, { type SimulateResult } from "@/components/DemoPanel";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -88,6 +89,32 @@ export default function ApprovalQueue() {
     setTimeout(() => setToast(null), 3000);
   }
 
+  async function handleSimulatedDraft(result: SimulateResult) {
+    abortRef.current?.abort();
+    try {
+      const res = await fetch(`${API}/api/v1/approvals/pending`, {
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) throw new Error(`Server error ${res.status}`);
+      const data: PendingDraft[] = await res.json();
+      const sorted = [...data].sort((a, b) => {
+        const order = { EMERGENCY: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+        return (order[a.urgency] ?? 9) - (order[b.urgency] ?? 9);
+      });
+      setDrafts(sorted);
+      const match =
+        sorted.find((d) => d.draft_id === result.draft_id) ?? sorted[0] ?? null;
+      if (match) {
+        setSelected(match);
+        setActiveTab("original");
+      }
+      const secs = (result.processing_time_ms / 1000).toFixed(1);
+      showToast(`✓ New ${result.urgency} draft ready — triaged in ${secs}s`, true);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Failed to refresh queue", false);
+    }
+  }
+
   async function handleApprove(draftId: string) {
     setActionLoading(draftId);
     const prev = drafts;
@@ -167,6 +194,8 @@ export default function ApprovalQueue() {
             </div>
           )}
         </div>
+
+        <DemoPanel onNewDraft={handleSimulatedDraft} />
 
         <div className="flex-1 overflow-y-auto">
           {loading ? (
