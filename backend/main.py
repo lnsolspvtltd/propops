@@ -24,7 +24,7 @@ async def lifespan(app: FastAPI):
     try:
         validate_startup_settings()
     except SystemExit:
-        raise
+        raise  # Re-raise to block startup
 
     try:
         await init_db()
