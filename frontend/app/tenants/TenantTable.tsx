@@ -1,63 +1,44 @@
-import { useState } from "react"
-import { useSWR, mutate } from "swr"
-import { cn } from "@/lib/utils"
-
+"use client";
 interface Tenant {
-  id: string
-  name: string
-  email: string
-  phone: string | null
-  unit_id: string | null
+  id: string; name: string; email: string;
+  phone: string | null; unit_id: string | null;
 }
-
-export default function TenantTable({ tenants }: { tenants: Tenant[] }) {
-  const [showModal, setShowModal] = useState(false)
-
-  const handleDeleteTenant = async (tenantId: string) => {
-    try {
-      await fetch(`/api/v1/tenants/${tenantId}`, {
-        method: "DELETE",
-      })
-
-      mutate("/api/v1/tenants")
-    } catch (error) {
-      console.error(error)
-      alert("An error occurred while deleting the tenant.")
-    }
-  }
-
+interface Props {
+  tenants: Tenant[];
+  onDelete: (id: string) => void;
+}
+export default function TenantTable({ tenants, onDelete }: Props) {
+  if (tenants.length === 0)
+    return <p className="text-gray-500 text-sm">No tenants yet. Add one or upload a CSV.</p>;
   return (
-    <div className={cn(
-      "flex flex-col gap-4 p-8",
-      tenants.length === 0 ? "opacity-50 pointer-events-none" : ""
-    )}>
-      {showModal && (
-        <TenantTable onClose={handleCloseModal} />
-      )}
-      <table className="w-full border-collapse">
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
         <thead>
-          <tr>
-            <th>Name</th>
-            <th>Email</th>
-            <th>Phone</th>
-            <th>Unit ID</th>
-            <th>Action</th>
+          <tr className="border-b border-gray-800 text-gray-400 text-left">
+            <th className="pb-2 pr-4">Name</th>
+            <th className="pb-2 pr-4">Email</th>
+            <th className="pb-2 pr-4">Phone</th>
+            <th className="pb-2 pr-4">Unit</th>
+            <th className="pb-2" />
           </tr>
         </thead>
         <tbody>
-          {tenants.map((tenant) => (
-            <tr key={tenant.id}>
-              <td>{tenant.name}</td>
-              <td>{tenant.email}</td>
-              <td>{tenant.phone || "N/A"}</td>
-              <td>{tenant.unit_id || "N/A"}</td>
-              <td>
-                <button onClick={() => handleDeleteTenant(tenant.id)}>Delete</button>
+          {tenants.map((t) => (
+            <tr key={t.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
+              <td className="py-2 pr-4 text-white">{t.name}</td>
+              <td className="py-2 pr-4 text-gray-300">{t.email}</td>
+              <td className="py-2 pr-4 text-gray-400">{t.phone ?? "—"}</td>
+              <td className="py-2 pr-4 text-gray-400">{t.unit_id ?? "—"}</td>
+              <td className="py-2">
+                <button onClick={() => onDelete(t.id)}
+                  className="text-xs text-red-400 hover:text-red-300 transition-colors">
+                  Delete
+                </button>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
     </div>
-  )
+  );
 }
