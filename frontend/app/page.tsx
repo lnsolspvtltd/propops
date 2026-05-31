@@ -1,6 +1,5 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import Link from "next/link";
 import { AlertCircle, RefreshCw, Mail, Clock, CheckCircle2, XCircle } from "lucide-react";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -148,21 +147,19 @@ export default function ApprovalQueue() {
         <div className="p-4 border-b border-gray-800">
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="font-bold text-white text-lg">PropOps</h1>
+              <h1 className="font-bold text-white text-lg">Approval queue</h1>
               <p className="text-xs text-gray-400 mt-0.5">
                 {drafts.length > 0 ? `${drafts.length} pending approval${drafts.length !== 1 ? "s" : ""}` : "All caught up"}
               </p>
             </div>
-            <div className="flex gap-2">
-              <button onClick={() => fetchDrafts(true)}
-                className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-800 rounded transition-colors">
-                <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-              </button>
-              <Link href="/incidents"
-                className="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 rounded text-gray-300 transition-colors">
-                Incidents -&gt;
-              </Link>
-            </div>
+            <button
+              type="button"
+              onClick={() => fetchDrafts(true)}
+              className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-800 rounded transition-colors"
+              aria-label="Refresh queue"
+            >
+              <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+            </button>
           </div>
           {error && (
             <div className="mt-3 flex items-center gap-2 text-xs text-red-400 bg-red-950/30 rounded p-2">

@@ -1,0 +1,84 @@
+---
+description: PropOps agent workflow, Windows shell pitfalls, and GitHub issue cycle (default unless user overrides)
+alwaysApply: true
+---
+
+# PropOps — Agent Workflow & Environment
+
+**Override**: If the user gives conflicting instructions, follow the user. Otherwise follow this rule on every PropOps session.
+
+## Repository
+
+- Remote: `https://github.com/lnsolspvtltd/propops.git`
+- Workdir: `c:\Users\shiva\OneDrive\Desktop\propops`
+- Issue branches seen: `anvil/issue-{N}`, `phase3/issue-{N}`, `phase3/issue-{N}-{M}`, `clean/issue-{N}`
+
+## Windows / PowerShell — DO NOT REPEAT THESE FAILURES
+
+| Mistake | What happened | Correct approach |
+|--------|----------------|------------------|
+| `cmd1 && cmd2` | `InvalidEndOfLine` — `&&` is not a statement separator in **Windows PowerShell 5.x** | Chain with `;` on one line, or run **separate** Shell tool calls |
+| `curl -s ...` | PowerShell aliases `curl` → `Invoke-WebRequest` (wrong params) | Always use **`curl.exe`** for GitHub API / HTTP |
+| `gh issue list` | `gh` not in PATH on this machine | Install GitHub CLI, or use **`curl.exe`** + REST API; for auth use `$env:GITHUB_TOKEN` |
+| `winget list` without need | Command hung ~47s, interrupted | Avoid slow discovery commands; check known paths first |
+| Assuming `gh` works | Silent failure blocked issue triage | Probe first: `Get-Command gh -EA SilentlyContinue` or test `curl.exe` |
+
+### Safe command templates (copy these patterns)
+
+```powershell
+# Change directory + one action
+Set-Location "c:\Users\shiva\OneDrive\Desktop\propops"; git status
+
+# GitHub API (public read)
+curl.exe -s -H "Accept: application/vnd.github+json" "https://api.github.com/repos/lnsolspvtltd/propops/issues?state=open&per_page=20"
+
+# GitHub API (authenticated — PR create, merge, comments)
+$headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = "application/vnd.github+json" }
+# Use curl.exe -H "Authorization: Bearer $env:GITHUB_TOKEN" ...
+
+# GitHub CLI when installed
+& "C:\Program Files\GitHub CLI\gh.exe" pr list --repo lnsolspvtltd/propops
+```
+
+**Never** use bash-only heredocs (`<<'EOF'`) in PowerShell commits; use a here-string or `-m "message"` for git commit.
+
+## GitHub issue cycle (one issue at a time)
+
+Process **oldest open issue first** unless labels/dependencies say otherwise. Do not start the next issue until the current PR is **merged** (or user says stop).
+
+1. **Discover** — List open issues (`curl.exe` or `gh`). Read full body + acceptance criteria.
+2. **Branch** — Checkout existing issue branch from `origin` or create: `phase3/issue-{number}` (match repo convention).
+3. **Implement** — Minimal diff; match existing FastAPI/Next.js patterns; run tests before push.
+4. **Push** — `git push -u origin HEAD` on the issue branch only (not force-push `main`).
+5. **PR** — Open PR to `main`; body includes Summary + Test plan; link `Closes #N`.
+6. **Review loop** — Poll PR review comments (FORGE/Claude). Fix → push → reply; repeat until **approved**.
+7. **Merge** — Merge only when checks pass and review is approved; then close issue.
+8. **Next** — Return to step 1 for the next open issue.
+
+### Local git cautions (observed on this machine)
+
+- `origin/main` may contain **invalid Windows paths** (newline in filename) — `git checkout origin/main` fails. Branch from **local `main`** after path cleanup commits are applied.
+- `main` may be **ahead of `origin/main`** with unpushed commits — push cleanup to `main` when user allows so remotes are Windows-safe.
+- Do not use stale branch `phase3/issue-33-35` (large deletions vs current `main`).
+- **Do not commit** unless the user explicitly asks.
+- **Do not force-push** `main`.
+
+## PropOps stack reminders
+
+- Backend: FastAPI under `backend/`, tests in `backend/tests/` and `tests/`
+- Frontend: Next.js under `frontend/`
+- Run tests: `pytest` from repo root (see `Makefile` / `pyproject.toml`)
+- Demo-only endpoints: guard with `ENVIRONMENT=development`
+
+## Open phase-3 issues (refresh via API each session)
+
+- #35 — Persistent nav + approval badge count
+- #36 — Simulate incoming email (demo trigger)
+- #37 — Settings page IMAP + org management
+
+Branches on remote may already exist (e.g. `phase3/issue-33-35`); always `git fetch origin` before checkout.
+
+## When GitHub CLI is missing
+
+1. Ask user to install: `winget install GitHub.cli` OR set `GITHUB_TOKEN` for API.
+2. Until then: **read** issues/PRs/comments via `curl.exe`; **write** (PR/merge) needs token or `gh` auth.

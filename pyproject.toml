@@ -1,10 +1,14 @@
-"""Project metadata and tool configuration for PropOps Backend."""
-
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "propops-backend"
+name = "propops"
 version = "0.1.0"
-description =
+description = "PropOps — AI property operations middleware"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["backend/tests", "tests"]
+pythonpath = ["."]
