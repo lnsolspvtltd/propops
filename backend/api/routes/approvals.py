@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.database import get_db
 from backend.models.incident import AIDraft, Incident
+from backend.services.email_sender import send_approved_draft
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/approvals", tags=["approvals"])
@@ -106,7 +107,6 @@ async def approve_draft(
     draft.approved_at = datetime.now(timezone.utc)
 
     try:
-        from backend.services.email_sender import send_approved_draft
         background_tasks.add_task(send_approved_draft, draft)
     except Exception as e:
         logger.warning("Could not queue email send: %s", e)
