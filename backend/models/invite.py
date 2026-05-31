@@ -2,7 +2,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -21,6 +21,14 @@ class Invite(Base):
 
     __tablename__ = "invites"
 
+    # Named unique constraint on jti — prevents replay attacks on accept URLs.
+    # CheckConstraint ensures expires_at is always after created_at so logically
+    # invalid invites can never reach the database.
+    __table_args__ = (
+        UniqueConstraint("jti", name="uq_invites_jti"),
+        CheckConstraint("expires_at > created_at", name="ck_invites_expires_after_created"),
+    )
+
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
@@ -31,9 +39,9 @@ class Invite(Base):
     )
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False, default="member")
-    # jti uniqueness enforced at DB level — one active link per jti,
-    # preventing replay attacks on accept URLs.
-    jti: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    # jti uniqueness enforced via named constraint in __table_args__ — one
+    # active link per jti, preventing replay attacks on accept URLs.
+    jti: Mapped[str] = mapped_column(String(36), nullable=False)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL"),
@@ -46,7 +54,10 @@ class Invite(Base):
         DateTime(timezone=True), nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True),
+        server_default=func.now(),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
     )
 
     def __repr__(self) -> str:

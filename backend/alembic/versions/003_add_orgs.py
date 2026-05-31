@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # unique string, not only hex UUIDs). Do NOT change once deployed.
 # ---------------------------------------------------------------------------
 revision = "003_add_orgs"
-down_revision = "002_initial_phase1_schema"
+down_revision = "002"
 branch_labels = None
 depends_on = None
 
