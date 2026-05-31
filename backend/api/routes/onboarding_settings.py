@@ -66,6 +66,8 @@ async def update_settings(
     if body.smtp_password: org.smtp_password_enc = encrypt(body.smtp_password)
     if body.polling_active is not None: org.polling_active = body.polling_active
 
-    await db.flush()
+    await db.commit()
+    await db.refresh(org)
+
     return OrganisationResponse(org_id=str(org.id), name=org.name,
                                 polling_active=org.polling_active, imap_connected=True)
