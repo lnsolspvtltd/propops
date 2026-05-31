@@ -43,6 +43,11 @@ async def login(req: LoginRequest) -> LoginResponse:
         (email == DEMO_EMAIL and req.password == DEMO_PASSWORD) or
         (settings.environment == "development" and req.password == DEMO_PASSWORD)
     )
+    
+    # Security check: prevent demo credentials in production
+    if settings.environment == "production" and req.password == DEMO_PASSWORD:
+        raise RuntimeError("Demo credentials not allowed in production")
+    
     if not is_valid:
         raise HTTPException(status_code=401, detail={"error": "Invalid credentials"})
 
