@@ -1,32 +1,32 @@
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import String, Integer, Boolean, DateTime, ForeignKey, select
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.exc import SQLAlchemyError
-import logging
+"""SQLAlchemy model for multi-tenant Organisation."""
+import uuid
+from datetime import datetime, timezone
 
-logger = logging.getLogger(__name__)
+from sqlalchemy import Boolean, DateTime, Integer, String
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column
+
+from backend.models.base import Base
+
 
 class Organisation(Base):
     __tablename__ = "organisations"
-    
-    id: Mapped[str] = mapped_column(primary_key=True)
-    name: str = mapped_column(String(255), nullable=False)
-    imap_host: str | None = mapped_column(String(255))
-    imap_port: int = mapped_column(Integer, default=993)
-    imap_username: str | None = mapped_column(String(255))
-    imap_password_enc: str | None = mapped_column(String(255))  # Fernet encrypted
-    smtp_host: str | None = mapped_column(String(255))
-    smtp_port: int = mapped_column(Integer, default=587)
-    polling_active: bool = mapped_column(Boolean, default=False)
-    created_at: Mapped[DateTime] = mapped_column(default=DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[DateTime] = mapped_column(default=DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    deleted_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
 
-    # Indexes
-    __table_args__ = (
-        Index("idx_organisations_deleted", deleted_at),
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    imap_host: Mapped[str | None] = mapped_column(String(255))
+    imap_port: Mapped[int] = mapped_column(Integer, default=993)
+    imap_username: Mapped[str | None] = mapped_column(String(255))
+    imap_password_enc: Mapped[str | None] = mapped_column(String(512))
+    imap_folder: Mapped[str] = mapped_column(String(100), default="INBOX")
+    smtp_host: Mapped[str | None] = mapped_column(String(255))
+    smtp_port: Mapped[int] = mapped_column(Integer, default=587)
+    smtp_username: Mapped[str | None] = mapped_column(String(255))
+    smtp_password_enc: Mapped[str | None] = mapped_column(String(512))
+    polling_active: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
-    def __repr__(self):
-        return f"<Organisation(id={self.id}, name={self.name})>"
----
+    def __repr__(self) -> str:
+        return f"<Organisation id={self.id} name={self.name!r}>"
