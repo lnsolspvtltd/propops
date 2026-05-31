@@ -160,7 +160,7 @@ export default function ApprovalQueue() {
               </button>
               <Link href="/incidents"
                 className="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 rounded text-gray-300 transition-colors">
-                Incidents →
+                Incidents ->
               </Link>
             </div>
           </div>
