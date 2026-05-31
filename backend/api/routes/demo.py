@@ -87,7 +87,7 @@ SEED_INCIDENTS = [
         "source": "chen.l@tenant.example.com", "status": "CLOSED",
         "raw_message": "Hi, just wanted to say thank you for sending the engineer so quickly yesterday. The heating is working perfectly now. Great service!\n\nChen L, Unit 2",
         "draft_subject": "Re: Thank You — Unit 2",
-        "draft_body": "Dear Chen,\n\nThank you so much for taking the time to share this feedback — it really means a lot to our team.\n\nWe're delighted the heating is back to working order and that the response time met your expectations. We'll pass your kind words on to the engineer.\n\nDo not hesitate to get in touch if there is anything else we can help with.\n\nWarm regards,\nPropOps Team",
+        "draft_body": "Dear Chen,\n\nThank so much for taking the time to share this feedback — it really means a lot to our team.\n\nWe're delighted the heating is back to working order and that the response time met your expectations. We'll pass your kind words on to the engineer.\n\nDo not hesitate to get in touch if there is anything else we can help with.\n\nWarm regards,\nPropOps Team",
     },
 ]
 
