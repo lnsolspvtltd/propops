@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.api.routes import approvals, health, inbox, incidents
+from backend.api.routes import approvals, demo, health, inbox, incidents
 from backend.core.config import get_settings, validate_startup_settings
 from backend.core.database import init_db
 from backend.services.inbox_poller import start_inbox_poller, stop_inbox_poller
@@ -103,13 +103,8 @@ except ImportError:
     pass
 
 # Demo routes - development only
-try:
-    if get_settings().environment == "development":
-        from backend.api.routes import demo
-        app.include_router(demo.router)
-        logger.info("Demo routes registered (dev only)")
-except Exception:
-    pass
+if settings.environment == 'development':
+    app.include_router(demo.router)
 
 
 @app.get("/")
