@@ -1,93 +1,99 @@
-# PropOps — AI Operational Middleware for Property Managers
+# PropOps
 
-**LN Sols Pvt Ltd** | Built with Project Helix
+**AI Operational Middleware for Property Managers.**
+
+PropOps automates the inbox → triage → draft → approve → reply loop so property managers spend minutes, not hours, on tenant email.
 
 ---
 
-## What Is This
+## What it does
 
-PropOps is the AI operations layer for property management companies.
+1. **Polls your inbox** every 60 s via IMAP
+2. **Triages** each email with Claude Haiku (category + urgency in < 1 s)
+3. **Drafts** a professional reply with Claude Sonnet (NEVER admits liability)
+4. **Queues** the draft for your 1-click approval in the dashboard
+5. **Sends** the approved reply via SMTP and marks the incident closed
 
-It does NOT replace AppFolio, Buildium, or Yardi.  
-It sits **on top of them** and solves coordination chaos — the thing legacy PM software never solved.
+---
 
-## The Problem It Solves
-
-- Overwhelmed inboxes (tenant + vendor emails 24/7)
-- Vendor coordination chaos (quotes, scheduling, follow-ups)
-- Turnover orchestration (cleaning → repairs → listing — all manual today)
-- Fragmented communication across email, SMS, portals
-
-## How It Works
-
-```
-Inbound Email/SMS
-      ↓
-AI Triage (classify + urgency)
-      ↓
-Incident Created
-      ↓
-Draft Reply Generated
-      ↓
-Property Manager Approves (1 click)
-      ↓
-SMTP Send (Auto)
-      ↓
-Vendor Outreach (Phase 2)
-```
-
-## Phase 1 MVP — Inbox Triage Wedge
-
-- [x] Inbox ingestion (IMAP/Gmail/Outlook)
-- [x] AI classification + urgency scoring
-- [x] Draft reply generation
-- [x] Human approval queue (web UI)
-- [x] **Email sending via SMTP** ← NEW
-- [x] Incident state machine (OPEN → RESOLVED)
-- [x] Audit log
-
-## Tech Stack
-
-- **Backend**: FastAPI (Python)
-- **Frontend**: Next.js + Tailwind + shadcn/ui
-- **Database**: PostgreSQL (Supabase)
-- **AI**: Claude Haiku (triage) + Claude Sonnet (drafting)
-- **Email**: IMAP + Gmail API + Outlook API + SMTP
-- **Deploy**: Vercel (frontend) + Railway (backend)
-
-## ICP
-
-Property management companies:
-- 50–500 units
-- Toronto/GTA first, then Ontario, Canada, USA
-- 2–25 employees
-- Email-heavy workflows
-
-## Pricing
-
-- Beta: Free
-- Paid: $2/unit/month
-- Later: hybrid base + workflow usage
-
-## Getting Started
+## Quickstart (Docker — recommended)
 
 ```bash
-cp .env.example .env
-# fill in your SMTP credentials (Gmail App Password recommended)
+cp backend/.env.example backend/.env
+# Fill in ANTHROPIC_API_KEY, IMAP_*, SMTP_*, FERNET_KEY at minimum
 
-# Backend
-cd backend && pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
-
-# Frontend
-cd frontend && npm install && npm run dev
+docker compose up --build
 ```
 
-### Setting up Gmail SMTP
+- **Dashboard:** http://localhost:3000
+- **API docs:** http://localhost:8000/docs
+- **DB admin:** http://localhost:8080
 
-1. Enable 2-Step Verification on your Google account
-2. Generate an App Password: https://myaccount.google.com/apppasswords
-3. Use the 16-character password in `SMTP_PASSWORD`
+### Generate FERNET_KEY
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
 
 ---
-*Built by ANVIL · Managed by NEXUS · Reviewed by FORGE · LN Sols Pvt Ltd*
+
+## Phase 2 setup (Tenants / Vendors / Onboarding)
+
+After your first `docker compose up`:
+
+1. Visit http://localhost:3000/onboarding — enter your IMAP/SMTP details
+2. Copy the `org_id` returned and add it to `frontend/.env.local`:
+   ```
+   NEXT_PUBLIC_DEFAULT_ORG_ID=<paste here>
+   ```
+3. Import tenants at http://localhost:3000/tenants (CSV upload supported)
+4. Add vendors at http://localhost:3000/vendors
+
+---
+
+## Stack
+
+| Layer | Tech |
+|-------|------|
+| Backend | FastAPI · SQLAlchemy 2 async · PostgreSQL 16 · Alembic |
+| AI | Anthropic Claude (Haiku triage, Sonnet drafts) |
+| Frontend | Next.js 14 · Tailwind CSS |
+| Email | IMAP (imaplib) · SMTP |
+| Infra | Docker Compose |
+
+---
+
+## Project structure
+
+```
+backend/
+  api/routes/      — FastAPI routers (incidents, approvals, dashboard, tenants, vendors, onboarding)
+  ai/              — Claude triage + draft agents
+  models/          — SQLAlchemy models
+  services/        — inbox poller, email sender, context resolver, vendor notifier
+  core/            — database, config, encryption
+  alembic/         — DB migrations
+frontend/
+  app/             — Next.js app router pages
+```
+
+---
+
+## Running tests
+
+```bash
+cd backend && pip install -r requirements.txt -r requirements-dev.txt
+pytest tests/ -v
+```
+
+---
+
+## Phase roadmap
+
+- ✅ **Phase 1** — Core pipeline: IMAP → triage → draft → approve → send
+- ✅ **Phase 2** — Dashboard, tenant/unit management, vendor management, org onboarding
+- 🔜 **Phase 3** — Auth (Clerk/Auth.js), multi-org isolation, billing, mobile push
+
+---
+
+*Built by LN Sols · lnsols.com*
