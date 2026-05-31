@@ -18,7 +18,7 @@ SECURITY: UUID extension creation requires superuser in some managed databases
   Local PostgreSQL: run as superuser or: CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 Revision ID : 003_add_orgs
-Revises     : 002_initial_phase1_schema (previous migration)
+Revises     : 002
 Create Date : 2025-01-16 (add organisations table)
 """
 import logging

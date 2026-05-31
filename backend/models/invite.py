@@ -38,7 +38,7 @@ class Invite(Base):
         nullable=False,
     )
     email: Mapped[str] = mapped_column(String(255), nullable=False)
-    role: Mapped[str] = mapped_column(String(20), nullable=False, default="member")
+    role: Mapped[str] = mapped_column(String(20), nullable=False, default="member", server_default="member")
     # jti uniqueness enforced via named constraint in __table_args__ — one
     # active link per jti, preventing replay attacks on accept URLs.
     jti: Mapped[str] = mapped_column(String(36), nullable=False)

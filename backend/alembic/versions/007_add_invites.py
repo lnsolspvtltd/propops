@@ -18,6 +18,7 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"')
     op.create_table(
         "invites",
         # server_default ensures gen_random_uuid() fires even for raw SQL
@@ -86,6 +87,6 @@ def downgrade() -> None:
     op.drop_index("idx_invites_org_email", table_name="invites")
     op.drop_index("idx_invites_jti", table_name="invites")
     op.drop_index("idx_invites_org_id", table_name="invites")
-    op.drop_constraint("ck_invites_expires_after_created", "invites")
-    op.drop_constraint("uq_invites_jti", "invites")
+    op.drop_constraint("ck_invites_expires_after_created", "invites", type_="check")
+    op.drop_constraint("uq_invites_jti", "invites", type_="unique")
     op.drop_table("invites")
