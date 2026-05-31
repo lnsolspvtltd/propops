@@ -1,236 +1,126 @@
-import React, { useState } from "react";
-import { useRouter } from "next/router";
-import { cn } from "@/lib/utils";
-import { Button, Input, Textarea } from "@/components/ui";
+"use client";
+import { useState } from "react";
 
-const OnboardingWizard = () => {
-  const router = useRouter();
-  const [step, setStep] = useState(1);
-  const [formData, setFormData] = useState({
-    name: "",
-    imapHost: "",
-    imapPort: 993,
-    imapUsername: "",
-    imapPassword: "",
-    smtpHost: "",
-    smtpPort: 587,
-    smtpUsername: "",
-    smtpPassword: "",
-  });
+type Step = "email" | "org" | "done";
 
-  const handleInputChange = (e) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
-  };
+interface ImapForm {
+  imap_host: string; imap_port: string; imap_username: string; imap_password: string;
+  smtp_host: string; smtp_port: string; smtp_username: string; smtp_password: string;
+}
+const EMPTY_IMAP: ImapForm = {
+  imap_host: "", imap_port: "993", imap_username: "", imap_password: "",
+  smtp_host: "", smtp_port: "587", smtp_username: "", smtp_password: "",
+};
 
-  const handleSubmit = async () => {
+function Input({ label, ...props }: { label: string } & React.InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <div className="space-y-1">
+      <label className="text-xs text-gray-400">{label}</label>
+      <input {...props}
+        className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500" />
+    </div>
+  );
+}
+
+export default function OnboardingPage() {
+  const [step, setStep] = useState<Step>("email");
+  const [imap, setImap] = useState<ImapForm>(EMPTY_IMAP);
+  const [orgName, setOrgName] = useState("");
+  const [testStatus, setTestStatus] = useState<"idle" | "testing" | "ok" | "error">("idle");
+  const [testError, setTestError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [orgId, setOrgId] = useState("");
+
+  function field(k: keyof ImapForm) {
+    return { value: imap[k], onChange: (e: React.ChangeEvent<HTMLInputElement>) => setImap((p) => ({ ...p, [k]: e.target.value })) };
+  }
+
+  async function testImap() {
+    setTestStatus("testing");
+    setTestError("");
     try {
-      switch (step) {
-        case 1:
-          // Validate and test IMAP connection
-          if (
-            !formData.imapHost ||
-            !formData.imapUsername ||
-            !formData.imapPasswordEnc ||
-            !formData.smtpHost ||
-            !formData.smtpUsername ||
-            !formData.smtpPasswordEnc
-          ) {
-            alert("Please fill in all fields.");
-            return;
-          }
+      const r = await fetch("/api/v1/onboarding/test-imap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...imap, imap_port: Number(imap.imap_port), smtp_port: Number(imap.smtp_port) }),
+      });
+      if (r.ok) { setTestStatus("ok"); }
+      else { const d = await r.json(); setTestStatus("error"); setTestError(d?.error ?? "Connection failed"); }
+    } catch { setTestStatus("error"); setTestError("Network error"); }
+  }
 
-          const isImapConnected = await pollImap(
-            formData.imapHost,
-            formData.imapPort,
-            formData.imapUsername,
-            formData.imapPasswordEnc
-          );
-
-          if (!isImapConnected) {
-            alert("Failed to connect to IMAP. Please check your credentials.");
-            return;
-          }
-
-          // Proceed to the next step
-          setStep(2);
-          break;
-
-        case 2:
-          // Create organisation and save form data
-          const response = await fetch("/api/v1/onboarding/setup", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(formData),
-          });
-
-          if (response.ok) {
-            const orgData = await response.json();
-            alert("Organisation created successfully!");
-            router.push(`/onboarding/status?id=${orgData.id}`);
-          } else {
-            alert("Failed to create organisation. Please try again.");
-          }
-          break;
-
-        default:
-          // Handle unexpected step
-          console.error(`Invalid step: ${step}`);
-      }
-    } catch (error) {
-      console.error("Error during onboarding:", error);
-      alert("An error occurred during the onboarding process. Please try again later.");
-    }
-  };
-
-  const pollImap = async (
-    host: string,
-    port: number,
-    username: string,
-    passwordEnc: string
-  ) => {
-    // Decrypt password
-    const password = decrypt(passwordEnc);
-
-    // Connect to IMAP server
-    const imap = new imap({
-      user: username,
-      password: password,
-      host: host,
-      port: port,
-      secure: true,
-    });
-
+  async function setup() {
+    setSaving(true);
     try {
-      await imap.connect();
-      await imap.select("INBOX");
+      const r = await fetch("/api/v1/onboarding/setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          org_name: orgName, ...imap,
+          imap_port: Number(imap.imap_port), smtp_port: Number(imap.smtp_port),
+        }),
+      });
+      if (r.ok) { const d = await r.json(); setOrgId(d.org_id); setStep("done"); }
+      else { const d = await r.json(); alert(d?.error ?? "Setup failed"); }
+    } catch { alert("Network error"); } finally { setSaving(false); }
+  }
 
-      // Search for unread messages
-      const status = await imap.search(["UNSEEN"]);
-      if (status.length === 0) {
-        return false;
-      }
-
-      return true;
-    } catch (error) {
-      console.error("Error polling IMAP:", error);
-      return false;
-    } finally {
-      await imap.end();
-    }
-  };
-
-  const handleTestImap = async () => {
-    try {
-      if (
-        !formData.imapHost ||
-        !formData.imapUsername ||
-        !formData.smtpHost ||
-        !formData.smtpUsername
-      ) {
-        alert("Please fill in all fields.");
-        return;
-      }
-
-      const isImapConnected = await pollImap(
-        formData.imapHost,
-        formData.imapPort,
-        formData.imapUsername,
-        formData.imapPasswordEnc
-      );
-
-      if (isImapConnected) {
-        alert("IMAP connection successful!");
-      } else {
-        alert("Failed to connect to IMAP. Please check your credentials.");
-      }
-    } catch (error) {
-      console.error("Error testing IMAP:", error);
-      alert("An error occurred during the IMAP test. Please try again later.");
-    }
-  };
+  if (step === "done") return (
+    <div className="max-w-lg space-y-6">
+      <div className="rounded-xl border border-green-800 bg-green-950/30 p-6 space-y-3">
+        <h1 className="text-xl font-semibold text-green-400">✓ Setup complete</h1>
+        <p className="text-gray-300 text-sm">Your inbox is now being monitored. Org ID: <code className="text-xs text-gray-400">{orgId}</code></p>
+      </div>
+      <div className="flex gap-4 text-sm">
+        <a href="/tenants" className="text-blue-400 hover:text-blue-300">→ Set up tenants</a>
+        <a href="/vendors" className="text-blue-400 hover:text-blue-300">→ Set up vendors</a>
+        <a href="/" className="text-blue-400 hover:text-blue-300">→ Dashboard</a>
+      </div>
+    </div>
+  );
 
   return (
-    <div className="flex flex-col items-center justify-center h-screen">
-      {step === 1 && (
-        <form onSubmit={handleSubmit} className="w-full max-w-md p-4 bg-white rounded shadow-md">
-          <h2 className="text-2xl font-bold mb-4">Organisation Setup</h2>
-          <div className="mb-4">
-            <label htmlFor="name" className="block text-gray-700 font-bold mb-2">
-              Organisation Name
-            </label>
-            <Input
-              id="name"
-              name="name"
-              type="text"
-              value={formData.name}
-              onChange={handleInputChange}
-              required
-            />
-          </div>
-          <div className="mb-4">
-            <label htmlFor="imapHost" className="block text-gray-700 font-bold mb-2">
-              IMAP Host
-            </label>
-            <Input
-              id="imapHost"
-              name="imapHost"
-              type="text"
-              value={formData.imapHost}
-              onChange={handleInputChange}
-              required
-            />
-          </div>
-          <div className="mb-4">
-            <label htmlFor="imapPort" className="block text-gray-700 font-bold mb-2">
-              IMAP Port
-            </label>
-            <Input
-              id="imapPort"
-              name="imapPort"
-              type="number"
-              value={formData.imapPort}
-              onChange={handleInputChange}
-              required
-            />
-          </div>
-          <div className="mb-4">
-            <label htmlFor="imapUsername" className="block text-gray-700 font-bold mb-2">
-              IMAP Username
-            </label>
-            <Input
-              id="imapUsername"
-              name="imapUsername"
-              type="text"
-              value={formData.imapUsername}
-              onChange={handleInputChange}
-              required
-            />
-          </div>
-          <div className="mb-4">
-            <label htmlFor="imapPasswordEnc" className="block text-gray-700 font-bold mb-2">
-              IMAP Password (Encrypted)
-            </label>
-            <Input
-              id="imapPasswordEnc"
-              name="imapPasswordEnc"
-              type="text"
-              value={formData.imapPasswordEnc}
-              onChange={handleInputChange}
-              required
-            />
-          </div>
-          <div className="mb-4">
-            <label htmlFor="smtpHost" className="block text-gray-700 font-bold mb-2">
-              SMTP Host
-            </label>
-            <Input
-              id="smtpHost"
-              name="smtpHost"
-              type="text"
-              value={formData.smtpHost}
-              onChange={handleInputChange}
-              required
-            />
-          </div>
-          <div className="mb-4">
-            <label htmlFor="smtpPort" className
+    <div className="max-w-lg space-y-6">
+      <div>
+        <h1 className="text-xl font-semibold text-white">Organisation Setup</h1>
+        <p className="text-gray-400 text-sm mt-1">Connect your property management inbox to get started.</p>
+      </div>
+
+      {/* Step 1 — Email */}
+      <div className="rounded-xl border border-gray-800 bg-gray-900 p-5 space-y-4">
+        <h2 className="text-sm font-semibold text-gray-300">Step 1 — Email Connection</h2>
+        <div className="grid grid-cols-2 gap-3">
+          <Input label="IMAP Host" placeholder="imap.gmail.com" {...field("imap_host")} />
+          <Input label="IMAP Port" type="number" {...field("imap_port")} />
+          <Input label="Email address" type="email" {...field("imap_username")} />
+          <Input label="Password" type="password" {...field("imap_password")} />
+          <Input label="SMTP Host" placeholder="smtp.gmail.com" {...field("smtp_host")} />
+          <Input label="SMTP Port" type="number" {...field("smtp_port")} />
+          <Input label="SMTP Username" type="email" {...field("smtp_username")} />
+          <Input label="SMTP Password" type="password" {...field("smtp_password")} />
+        </div>
+        <div className="flex items-center gap-3">
+          <button onClick={testImap} disabled={testStatus === "testing"}
+            className="px-3 py-1.5 text-sm rounded border border-gray-700 text-gray-300 hover:border-gray-500 disabled:opacity-50">
+            {testStatus === "testing" ? "Testing…" : "Test Connection"}
+          </button>
+          {testStatus === "ok" && <span className="text-green-400 text-sm">✓ Connected</span>}
+          {testStatus === "error" && <span className="text-red-400 text-sm">✗ {testError}</span>}
+        </div>
+      </div>
+
+      {/* Step 2 — Org name */}
+      {(testStatus === "ok" || step === "org") && (
+        <div className="rounded-xl border border-gray-800 bg-gray-900 p-5 space-y-4">
+          <h2 className="text-sm font-semibold text-gray-300">Step 2 — Organisation Name</h2>
+          <Input label="Company / organisation name" placeholder="Acme Property Management"
+            value={orgName} onChange={(e) => setOrgName(e.target.value)} />
+          <button onClick={setup} disabled={saving || !orgName.trim()}
+            className="px-4 py-2 text-sm rounded bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50">
+            {saving ? "Setting up…" : "Complete Setup"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
