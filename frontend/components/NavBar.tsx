@@ -50,8 +50,11 @@ export default function NavBar() {
         {LINKS.map((l) => {
           const active = pathname === l.href;
           return (
-            <Link key={l.href} href={l.href}
-              className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${active ? "bg-blue-600 text-white" : "text-gray-400 hover:text-white hover:bg-gray-800"}`}>
+            <Link
+              key={l.href}
+              href={l.href}
+              className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${active ? "bg-blue-600 text-white" : "text-gray-400 hover:text-white hover:bg-gray-800"}`}
+            >
               <span className="text-base">{l.icon}</span>
               <span>{l.label}</span>
               {l.href === "/" && pendingCount > 0 && (
@@ -64,8 +67,10 @@ export default function NavBar() {
         })}
       </nav>
       <div className="p-3 border-t border-gray-800">
-        <button onClick={logout}
-          className="w-full text-left px-3 py-2 rounded-lg text-sm text-gray-500 hover:text-red-400 hover:bg-gray-800 transition-colors">
+        <button
+          onClick={logout}
+          className="w-full text-left px-3 py-2 rounded-lg text-sm text-gray-500 hover:text-red-400 hover:bg-gray-800 transition-colors"
+        >
           Sign out
         </button>
       </div>
