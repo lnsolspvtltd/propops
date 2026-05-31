@@ -33,6 +33,14 @@ async def login(req: LoginRequest) -> LoginResponse:
     Demo mode: accepts demo credentials only in development/test environments
     In production, swap this for a real user table lookup.
     """
+    # Validate required settings exist
+    if not settings.demo_email or not settings.demo_password:
+        logger.error("Missing required demo credentials in settings")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "Server configuration error"}
+        )
+    
     email = req.email.strip().lower()
     
     # Security check: prevent demo credentials in production
