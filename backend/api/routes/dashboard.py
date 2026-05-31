@@ -1,83 +1,102 @@
-from fastapi import APIRouter, Depends, HTTPException
+"""Dashboard stats endpoint — live summary for property managers."""
+import logging
+from datetime import datetime, timezone, timedelta
+
+from fastapi import APIRouter, Depends
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
-from .db import get_db
-from .models import Organization, Property, Unit, Incident, AI_Draft
-from datetime import datetime, timedelta
 
-router = APIRouter(prefix="/api/v1/dashboard", tags=["dashboard"])
+from backend.core.database import get_db
+from backend.models.incident import Incident, AIDraft, Unit
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+
+
+class CategoryCount(BaseModel):
+    category: str
+    count: int
+
+
+class RecentIncident(BaseModel):
+    id: str
+    subject: str
+    tenant_name: str | None = None
+    unit_label: str | None = None
+    urgency: str | None = None
+    status: str
+    created_at: datetime
+
 
 class DashboardStats(BaseModel):
     open_incidents: int
     awaiting_approval: int
     resolved_this_week: int
     avg_response_hours: float
-    top_categories: list[dict[str, str]]
-    recent_incidents: list[dict[str, str]]
+    top_categories: list[CategoryCount]
+    recent_incidents: list[RecentIncident]
+
 
 @router.get("/stats", response_model=DashboardStats)
-async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
-    open_incidents = await db.execute(
-        select(func.count(Incident.id)).where(Incident.status != "closed")
-    ).scalar_one_or_none()
-    
-    awaiting_approval = await db.execute(
-        select(func.count(AI_Draft.id)).where(AI_Draft.status == "pending")
-    ).scalar_one_or_none()
+async def get_dashboard_stats(db: AsyncSession = Depends(get_db)) -> DashboardStats:
+    """Return live summary stats. Scoped to all orgs (Phase 2 adds org_id filter)."""
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
 
-    resolved_this_week = await db.execute(
-        select(func.count(Incident.id)).where(
-            Incident.status == "closed",
-            Incident.resolved_at >= datetime.datetime.now() - timedelta(days=7)
-        )
-    ).scalar_one_or_none()
+    open_count: int = (await db.execute(
+        select(func.count()).select_from(Incident).where(Incident.status != "CLOSED")
+    )).scalar_one() or 0
 
-    avg_response_hours = await db.execute(
-        select(func.avg((AI_Draft.approved_at - Incident.created_at).total_seconds() / 3600))
-        .where(AI_Draft.status == "approved")
-    ).scalar_one_or_none()
+    pending_count: int = (await db.execute(
+        select(func.count()).select_from(AIDraft).where(AIDraft.status == "pending")
+    )).scalar_one() or 0
 
-    top_categories = (
-        await db.execute(
-            select(Incident.category, func.count(Incident.id))
-            .group_by(Incident.category)
-            .order_by(func.count(Incident.id).desc())
-            .limit(5)
+    resolved_count: int = (await db.execute(
+        select(func.count()).select_from(Incident).where(
+            Incident.status == "CLOSED",
+            Incident.resolved_at >= week_ago,
         )
-    ).mappings().all()
-    
-    recent_incidents = (
-        await db.execute(
-            select(
-                Incident.id,
-                Incident.title,
-                Unit.tenant_name,
-                Unit.unit_label,
-                Incident.urgency
-            )
-            .join(Unit, Incident.unit_id == Unit.id)
-            .where(Incident.status == "open")
-            .order_by(Incident.created_at.desc())
-            .limit(5)
+    )).scalar_one() or 0
+
+    avg_raw = (await db.execute(
+        select(func.avg(func.extract("epoch", AIDraft.sent_at - Incident.created_at) / 3600))
+        .select_from(AIDraft)
+        .join(Incident, AIDraft.incident_id == Incident.id)
+        .where(AIDraft.status == "approved", AIDraft.sent_at.isnot(None))
+    )).scalar_one()
+    avg_hours = round(float(avg_raw), 1) if avg_raw is not None else 0.0
+
+    cat_rows = (await db.execute(
+        select(Incident.category, func.count().label("cnt"))
+        .where(Incident.category.isnot(None))
+        .group_by(Incident.category)
+        .order_by(func.count().desc())
+        .limit(5)
+    )).all()
+    top_categories = [CategoryCount(category=r.category, count=r.cnt) for r in cat_rows]
+
+    recent_rows = (await db.execute(
+        select(
+            Incident.id, Incident.title, Incident.urgency,
+            Incident.status, Incident.created_at,
+            Unit.tenant_name, Unit.unit_number.label("unit_label"),
         )
-    ).mappings().all()
+        .outerjoin(Unit, Incident.unit_id == Unit.id)
+        .where(Incident.status != "CLOSED")
+        .order_by(Incident.created_at.desc())
+        .limit(5)
+    )).all()
+    recent_incidents = [
+        RecentIncident(
+            id=str(r.id), subject=r.title, tenant_name=r.tenant_name,
+            unit_label=r.unit_label, urgency=r.urgency,
+            status=r.status, created_at=r.created_at,
+        )
+        for r in recent_rows
+    ]
 
     return DashboardStats(
-        open_incidents=open_incidents or 0,
-        awaiting_approval=awaiting_approval or 0,
-        resolved_this_week=resolved_this_week or 0,
-        avg_response_hours=avg_response_hours or 0.0,
-        top_categories=[{"category": category, "count": count} for category, count in top_categories],
-        recent_incidents=[
-            {
-                "id": incident.id,
-                "subject": incident.title,
-                "tenant_name": unit.tenant_name,
-                "unit_label": unit.unit_label,
-                "urgency": incident.urgency
-            }
-            for incident, unit in zip(recent_incidents, units)
-        ]
+        open_incidents=open_count, awaiting_approval=pending_count,
+        resolved_this_week=resolved_count, avg_response_hours=avg_hours,
+        top_categories=top_categories, recent_incidents=recent_incidents,
     )
-
----
