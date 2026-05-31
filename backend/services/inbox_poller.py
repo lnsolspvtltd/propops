@@ -1,38 +1,34 @@
 import imaplib
-import logging
-import asyncio
 from email.parser import BytesParser
 from sqlalchemy.ext.asyncio import AsyncSession
-from backend.core.security import decrypt
-
-logger = logging.getLogger(__name__)
+from sqlalchemy.orm import Session
 
 async def poll_imap(
     host: str,
     port: int,
     username: str,
     password_enc: str,
-    db: AsyncSession,
+    db: Session = Depends(get_db),
 ):
     try:
         # Decrypt password
         password = decrypt(password_enc)
 
-        # Connect to IMAP server (wrapped in asyncio.to_thread for async compatibility)
-        imap = await asyncio.to_thread(imaplib.IMAP4_SSL, host, port)
-        await asyncio.to_thread(imap.login, username, password)
+        # Connect to IMAP server
+        imap = imaplib.IMAP4_SSL(host, port)
+        imap.login(username, password)
 
         # Select inbox
-        await asyncio.to_thread(imap.select, "INBOX")
+        imap.select("INBOX")
 
         # Search for unread messages
-        status, data = await asyncio.to_thread(imap.search, None, "UNSEEN")
+        status, data = imap.search(None, "UNSEEN")
         if not data:
             return False
 
         # Process each message
         for num in data[0].split():
-            _, msg_data = await asyncio.to_thread(imap.fetch, num, "(RFC822)")
+            _, msg_data = imap.fetch(num, "(RFC822)")
             msg = BytesParser().parsebytes(msg_data[0][1])
 
             # Extract relevant information (example: subject and sender)
