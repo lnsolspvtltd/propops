@@ -51,9 +51,105 @@ Process **oldest open issue first** unless labels/dependencies say otherwise. Do
 3. **Implement** — Minimal diff; match existing FastAPI/Next.js patterns; run tests before push.
 4. **Push** — `git push -u origin HEAD` on the issue branch only (not force-push `main`).
 5. **PR** — Open PR to `main`; body includes Summary + Test plan; link `Closes #N`.
-6. **Review loop** — Poll PR review comments (FORGE/Claude). Fix → push → reply; repeat until **approved**.
-7. **Merge** — Merge only when checks pass and review is approved; then close issue.
-8. **Next** — Return to step 1 for the next open issue.
+6. **Invoke FORGE** — Request code review (see **FORGE review invocation** below). Do not wait passively.
+7. **Review loop (max 3 iterations)** — Poll until FORGE finishes → implement all feedback → push → re-invoke. Track **1/3, 2/3, 3/3**.
+8. **Merge gate** — See **NEVER merge without FORGE approval** below. Only merge after explicit APPROVED review.
+9. **Escalation** — After **3 iterations** without FORGE approval: **STOP**, post summary on PR, ask **external user** for decision. Do **not** merge.
+10. **Next** — Return to step 1 for the next open issue only after merge + issue closed.
+
+## NEVER merge without FORGE approval (mandatory — no exceptions)
+
+**Do not merge a PR unless ONE of these is true:**
+
+1. **FORGE (or Claude code-review bot) has submitted a GitHub review with state `APPROVED`**, or
+2. An **external human user** (founder/client — not the agent) explicitly says “merge PR #N” in chat.
+
+**If neither condition is met, you MUST stop and wait.** Polling for reviews is required; merging early is forbidden.
+
+### What counts as approval
+
+| Signal | Merge? |
+|--------|--------|
+| `reviewDecision: APPROVED` / FORGE review `state: APPROVED` | Yes — after CI passes |
+| `reviewDecision: CHANGES_REQUESTED` | No — fix feedback, push, re-poll |
+| Empty reviews / no `reviewDecision` yet | **No — wait for FORGE** |
+| Agent thinks code is fine | **No** |
+| Checks green but no review | **No** |
+| User says “continue the issue cycle” | **No** — that is not merge permission |
+| External user: “merge PR #43” | Yes (if CI passes) |
+
+### Forbidden commands until approved
+
+- `gh pr merge` (any variant)
+- GitHub API `PUT .../pulls/{n}/merge`
+- Any other merge path (squash, rebase, admin merge)
+
+**Past mistake:** PR **#42** (issue #35) was merged without FORGE approval. Do **not** repeat.
+
+## FORGE review invocation (required after PR open/update)
+
+After opening or pushing to a PR, **actively invoke FORGE** — do not assume a webhook will fire.
+
+### Primary method (Helix `review_pr`)
+
+From `ln-sols-multi-agent` (requires `ANTHROPIC_API_KEY` + `GITHUB_TOKEN` in `.env`):
+
+```powershell
+Set-Location "c:\Users\shiva\OneDrive\Desktop\LN SOLS MULTI AGENT\ln-sols-multi-agent"
+python -c "from agents.forge.tools.code_reviewer import review_pr; r = review_pr('https://github.com/lnsolspvtltd/propops/pull/N'); print(r.review.overall_rating, r.review.approved)"
+```
+
+FORGE posts a GitHub PR review comment (`## 🔨 FORGE Code Review`) with rating and issues.
+
+**Do NOT use** `run_review_loop` / `scripts/run_forge_reviews.py` for PropOps agent workflow — those auto-fix via ANVIL and may auto-merge. PropOps agent implements fixes locally.
+
+### Alternative triggers
+
+| Method | When to use |
+|--------|-------------|
+| PR comment `@forge review` | If overseer webhook is running on EC2 |
+| `python scripts/run_forge_reviews.py --pr URL --max-iter 1` | One-shot review only (agent still fixes locally) |
+| GitHub Actions `forge-review.yml` | Only on `ln-sols-multi-agent` repo, not PropOps |
+
+### 3-iteration review cap (mandatory)
+
+Each PR gets at most **3 complete cycles**:
+
+1. **Invoke FORGE** → wait for review comment/review to appear
+2. **Implement all feedback** on the issue branch → run tests → push
+3. **Increment counter** (1/3, 2/3, 3/3) and repeat from step 1
+
+**After iteration 3 without approval:**
+
+- Post a PR comment: iteration count, remaining issues, merge blocked
+- **STOP** — do not merge, do not start next issue
+- Ask **external user** (founder) to approve merge or give direction
+
+**Goal:** Fix everything FORGE asks within ≤3 rounds so approval happens before escalation.
+
+### What counts as FORGE approval
+
+| Signal | Merge? |
+|--------|--------|
+| GitHub `reviewDecision: APPROVED` | Yes — after CI passes |
+| FORGE review body contains `✅ APPROVED` and `overall_rating: approved` with no critical/major issues | Yes — after CI passes |
+| `CHANGES_REQUESTED` / `❌ CHANGES REQUIRED` / critical or major issues listed | No — fix and re-invoke (if iterations remain) |
+| No FORGE review yet | No — invoke FORGE, then poll |
+| 3 iterations exhausted, still not approved | No — escalate to external user |
+
+### Review polling (after FORGE invoked)
+
+```powershell
+& "C:\Program Files\GitHub CLI\gh.exe" pr view 43 --repo lnsolspvtltd/propops --json reviewDecision,reviews,state
+& "C:\Program Files\GitHub CLI\gh.exe" api repos/lnsolspvtltd/propops/pulls/43/comments
+& "C:\Program Files\GitHub CLI\gh.exe" api repos/lnsolspvtltd/propops/issues/43/comments
+```
+
+If `CHANGES_REQUESTED` or inline comments exist: checkout issue branch → fix → test → push → reply → re-invoke FORGE → poll again (respect 3-iteration cap).
+
+### Do not start the next issue until the current one is merged with approval
+
+Example: do **not** implement #37 until PR for #36 is merged **with** FORGE approval.
 
 ### Local git cautions (observed on this machine)
 
