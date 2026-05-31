@@ -15,7 +15,7 @@ from backend.models.base import Base
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["Base", "engine", "AsyncSessionLocal", "get_db"]
+__all__ = ["Base", "engine", "AsyncSessionLocal", "get_db", "init_db"]
 
 # SQL echo routed through dedicated logger — avoids PII leaking to stdout in prod
 _db_logger = logging.getLogger("sqlalchemy.engine")
@@ -69,3 +69,17 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         except Exception as e:
             await session.rollback()
             raise
+
+
+async def init_db() -> None:
+    """Verify database connectivity at startup.
+
+    Schema changes are applied exclusively via Alembic migrations —
+    never call metadata.create_all() here.
+    """
+    from sqlalchemy import text
+
+    async with AsyncSessionLocal() as session:
+        await session.execute(text("SELECT 1"))
+    logger.info("Database connectivity verified (Alembic owns schema migrations)")
+

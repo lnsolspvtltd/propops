@@ -68,6 +68,7 @@ async def list_pending_approvals(
     _user: dict[str, Any] = Depends(get_current_user),
 ) -> list[DraftApprovalResponse]:
     """List all pending AI drafts with the original tenant email included."""
+    # Single JOIN query — Incident columns fetched in same round-trip (no N+1)
     result = await db.execute(
         select(AIDraft, Incident)
         .join(Incident, AIDraft.incident_id == Incident.id)
@@ -85,7 +86,7 @@ async def list_pending_approvals(
             body=d.body or "",
             recipient=d.recipient_email or "",
             created_at=d.created_at.isoformat() if d.created_at else "",
-            raw_message=inc.raw_message or None,
+            raw_message=inc.raw_message,
         )
         for d, inc in rows
     ]

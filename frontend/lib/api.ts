@@ -48,7 +48,9 @@ export async function apiFetch(path: string, options: RequestInit = {}): Promise
   const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
   if (res.status === 401) {
     clearToken();
+    const err = new Error("Unauthorized — please log in again");
     if (typeof window !== "undefined") window.location.href = "/login";
+    throw err;
   }
   return res;
 }

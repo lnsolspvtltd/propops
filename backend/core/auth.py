@@ -8,7 +8,10 @@ SECURITY-REVIEW: This module handles user authentication.
 - User info is extracted from verified token
 - Invalid/expired tokens return 401 Unauthorized
 """
+import json
 import logging
+import os
+from pathlib import Path
 from typing import Optional, Dict, Any
 
 from fastapi import Depends, HTTPException, Header
@@ -18,13 +21,35 @@ from backend.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# In-memory revocation set (production should use Redis)
-_revoked_jtis: set[str] = set()
+_REVOKED_JTI_PATH = Path(os.environ.get("REVOKED_JTI_FILE", ".revoked_jtis.json"))
+
+
+def _load_revoked_jtis() -> set[str]:
+    """Load revoked token JTIs from disk (survives process restarts)."""
+    if not _REVOKED_JTI_PATH.exists():
+        return set()
+    try:
+        return set(json.loads(_REVOKED_JTI_PATH.read_text(encoding="utf-8")))
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Could not load revoked JTIs: %s", e)
+        return set()
+
+
+def _persist_revoked_jtis(revoked: set[str]) -> None:
+    """Persist revoked JTIs to disk."""
+    try:
+        _REVOKED_JTI_PATH.write_text(json.dumps(sorted(revoked)), encoding="utf-8")
+    except OSError as e:
+        logger.error("Could not persist revoked JTIs: %s", e)
+
+
+_revoked_jtis: set[str] = _load_revoked_jtis()
 
 
 def revoke_token_jti(jti: str) -> None:
     """Mark a token jti as revoked (logout / stolen token)."""
     _revoked_jtis.add(jti)
+    _persist_revoked_jtis(_revoked_jtis)
 
 
 async def get_current_user(

@@ -20,7 +20,23 @@ from backend.core.database import get_db
 from backend.models.incident import Incident, AIDraft
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/v1/demo", tags=["demo"])
+
+
+def _check_dev_only():
+    if settings.environment != "development":
+        raise HTTPException(status_code=403, detail={"error": "Demo endpoints are development-only"})
+
+
+async def _require_development() -> None:
+    """Router-level guard: demo routes never register in production."""
+    _check_dev_only()
+
+
+router = APIRouter(
+    prefix="/api/v1/demo",
+    tags=["demo"],
+    dependencies=[Depends(_require_development)],
+)
 
 DEMO_SCENARIOS = {
     "emergency_leak": {
@@ -92,11 +108,6 @@ SEED_INCIDENTS = [
         "draft_body": "Dear Chen,\n\nThank so much for taking the time to share this feedback — it really means a lot to our team.\n\nWe're delighted the heating is back to working order and that the response time met your expectations. We'll pass your kind words on to the engineer.\n\nDo not hesitate to get in touch if there is anything else we can help with.\n\nWarm regards,\nPropOps Team",
     },
 ]
-
-
-def _check_dev_only():
-    if settings.environment != "development":
-        raise HTTPException(status_code=403, detail={"error": "Demo endpoints are development-only"})
 
 
 class SeedResponse(BaseModel):

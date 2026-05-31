@@ -1,5 +1,6 @@
 """Authentication routes — login + token management."""
 import logging
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -110,16 +111,32 @@ def _make_token(user: User) -> str:
     - jti   — fresh UUID4 (allows future revocation)
     - exp   — jwt_access_token_expire_minutes from now
     """
-    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_access_token_expire_minutes)
-    payload = {
-        "sub": str(user.id),
-        "email": user.email,
-        "org_id": str(user.org_id),
-        "role": user.role,
-        "jti": str(uuid.uuid4()),
-        "exp": expire,
-    }
-    return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
+    # Validate required settings exist
+    if not settings.demo_email or not settings.demo_password:
+        logger.error("Missing required demo credentials in settings")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "Server configuration error"}
+        )
+    
+    email = req.email.strip().lower()
+    
+    # Security check: prevent demo credentials in production
+    if settings.environment == "production" and req.password == settings.demo_password:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "Demo credentials not allowed in production"}
+        )
+    
+    # Demo auth — constant-time password compare
+    password_ok = secrets.compare_digest(req.password, settings.demo_password)
+    email_ok = email == settings.demo_email.strip().lower()
+    is_valid = (email_ok and password_ok) or (
+        settings.environment == "development" and password_ok
+    )
+    
+    if not is_valid:
+        raise HTTPException(status_code=401, detail={"error": "Invalid credentials"})
 
     expire = datetime.now(timezone.utc) + timedelta(hours=TOKEN_EXPIRE_HOURS)
     payload = {

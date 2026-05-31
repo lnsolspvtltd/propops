@@ -52,7 +52,7 @@ class Incident(Base):
     thread_id = Column(UUID(as_uuid=True), default=uuid.uuid4, nullable=False)
     title = Column(String(500), nullable=False)
     category = Column(String(100))
-    urgency = Column(String(50))  # EMERGENCY | HIGH | MEDIUM | LOW
+    urgency = Column(String(50), nullable=True)  # constrained by ck_incidents_urgency
     status = Column(String(50), default="OPEN", nullable=False, index=True)
     ai_summary = Column(Text)
     ai_confidence = Column(Float)
