@@ -4,30 +4,12 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-Real user auth backed by the `users` table.  bcrypt password hashing via
-passlib.  JWT tokens include sub, email, org_id, role, and jti claims.
-
-Demo-credential fallback is gated by settings.enable_demo_login and is
-disabled automatically in production regardless of that flag.
-"""
-import logging
-import secrets
-import uuid
-from datetime import datetime, timedelta, timezone
-from typing import Literal
-
-from fastapi import APIRouter, Depends, HTTPException
-from jose import jwt
-from passlib.context import CryptContext
-from pydantic import BaseModel, EmailStr, field_validator
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, HTTPException, Header
+from jose import jwt, JWTError
+from pydantic import BaseModel
 
 from backend.core.config import settings
-from backend.core.database import get_db
-from backend.models.organisation import Organisation
-from backend.models.user import User
+from backend.core.auth import revoke_token_jti
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -120,15 +102,15 @@ def _make_token(user: User) -> str:
         )
     
     email = req.email.strip().lower()
-    
-    # Security check: prevent demo credentials in production
-    if settings.environment == "production" and req.password == settings.demo_password:
+
+    # Production: demo login disabled entirely — real user table required
+    if settings.environment == "production":
         raise HTTPException(
             status_code=403,
-            detail={"error": "Demo credentials not allowed in production"}
+            detail={"error": "Demo login disabled in production"},
         )
     
-    # Demo auth — constant-time password compare
+    # Demo auth — constant-time password compare (development only)
     password_ok = secrets.compare_digest(req.password, settings.demo_password)
     email_ok = email == settings.demo_email.strip().lower()
     is_valid = (email_ok and password_ok) or (
@@ -313,6 +295,18 @@ async def login(
 
 
 @router.post("/logout")
-async def logout() -> dict:
-    """Client must discard the token. Server is stateless for now."""
+async def logout(authorization: str | None = Header(None)) -> dict:
+    """Revoke the current token's JTI server-side, then client discards it."""
+    if authorization:
+        parts = authorization.split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            try:
+                payload = jwt.decode(
+                    parts[1], settings.secret_key, algorithms=[ALGORITHM]
+                )
+                jti = payload.get("jti")
+                if jti:
+                    revoke_token_jti(jti)
+            except JWTError:
+                logger.warning("Logout: could not decode token for revocation")
     return {"status": "logged_out"}

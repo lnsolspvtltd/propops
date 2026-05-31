@@ -73,7 +73,8 @@ app.include_router(inbox.router, prefix="/api/v1/inbox", tags=["inbox"])
 app.include_router(incidents.router, prefix="/api/v1/incidents", tags=["incidents"])
 app.include_router(approvals.router, prefix="/api/v1/approvals", tags=["approvals"])
 app.include_router(auth.router)
-app.include_router(demo.router)
+if settings.environment == "development":
+    app.include_router(demo.router)
 
 # Phase 2 routes
 app.include_router(dashboard.router, prefix="/api/v1")
