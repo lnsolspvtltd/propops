@@ -68,6 +68,7 @@ async def create_vendor(body: VendorCreate, db: AsyncSession = Depends(get_db)) 
     )
     db.add(vendor)
     await db.flush()
+    await db.commit()
     return VendorOut.model_validate(vendor)
 
 
@@ -80,3 +81,4 @@ async def delete_vendor(vendor_id: uuid.UUID, db: AsyncSession = Depends(get_db)
         raise HTTPException(status_code=404, detail={"error": "Vendor not found"})
     vendor.active = False
     await db.flush()
+    await db.commit()
