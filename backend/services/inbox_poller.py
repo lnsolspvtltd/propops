@@ -1,18 +1,14 @@
 import imaplib
 from email.parser import BytesParser
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
-from backend.core.encryption import decrypt
-import logging
 
-logger = logging.getLogger(__name__)
-
-
-def poll_imap(
+async def poll_imap(
     host: str,
     port: int,
     username: str,
     password_enc: str,
-    db: Session,
+    db: Session = Depends(get_db),
 ):
     try:
         # Decrypt password
