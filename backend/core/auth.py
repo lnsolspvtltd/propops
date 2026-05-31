@@ -18,6 +18,14 @@ from backend.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# In-memory revocation set (production should use Redis)
+_revoked_jtis: set[str] = set()
+
+
+def revoke_token_jti(jti: str) -> None:
+    """Mark a token jti as revoked (logout / stolen token)."""
+    _revoked_jtis.add(jti)
+
 
 async def get_current_user(
     authorization: Optional[str] = Header(None),
@@ -48,13 +56,14 @@ async def get_current_user(
     # Extract token from "Bearer <token>"
     parts = authorization.split()
     if len(parts) != 2 or parts[0].lower() != "bearer":
-        logger.warning(f"get_current_user: Invalid Authorization header format")
+        logger.warning("get_current_user: Invalid Authorization header format")
         raise HTTPException(
             status_code=401,
             detail={
                 "error": "invalid_authorization_format",
                 "message": "Use: Authorization: Bearer <token>"
-            }
+            },
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     token = parts[1]
@@ -66,8 +75,15 @@ async def get_current_user(
             settings.secret_key,
             algorithms=[settings.jwt_algorithm]
         )
-        # Accept both "sub" (new tokens) and "user_id" (legacy tokens) for backward compat
-        user_id: str = payload.get("sub") or payload.get("user_id")
+        jti = payload.get("jti")
+        if jti and jti in _revoked_jtis:
+            logger.warning("get_current_user: Token revoked (jti blocklist)")
+            raise HTTPException(
+                status_code=401,
+                detail={"error": "token_revoked", "message": "Token has been revoked"},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        user_id: str = payload.get("sub")
         if not user_id:
             logger.warning("get_current_user: Token missing 'sub' claim")
             raise HTTPException(
@@ -93,7 +109,8 @@ async def get_current_user(
             detail={
                 "error": "token_expired",
                 "message": "Token has expired"
-            }
+            },
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     except JWTError as e:

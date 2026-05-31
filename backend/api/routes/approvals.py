@@ -3,11 +3,14 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
+from typing import Any
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.core.auth import get_current_user
 from backend.core.database import get_db
 from backend.models.incident import AIDraft, Incident
 from backend.services.email_sender import send_approved_draft
@@ -48,7 +51,10 @@ class CountResponse(BaseModel):
 
 
 @router.get("/count", response_model=CountResponse)
-async def pending_count(db: AsyncSession = Depends(get_db)) -> CountResponse:
+async def pending_count(
+    db: AsyncSession = Depends(get_db),
+    _user: dict[str, Any] = Depends(get_current_user),
+) -> CountResponse:
     """Fast count of pending drafts for nav badge."""
     count = (await db.execute(
         select(func.count()).select_from(AIDraft).where(AIDraft.status == "pending")
@@ -57,7 +63,10 @@ async def pending_count(db: AsyncSession = Depends(get_db)) -> CountResponse:
 
 
 @router.get("/pending", response_model=list[DraftApprovalResponse])
-async def list_pending_approvals(db: AsyncSession = Depends(get_db)) -> list[DraftApprovalResponse]:
+async def list_pending_approvals(
+    db: AsyncSession = Depends(get_db),
+    _user: dict[str, Any] = Depends(get_current_user),
+) -> list[DraftApprovalResponse]:
     """List all pending AI drafts with the original tenant email included."""
     result = await db.execute(
         select(AIDraft, Incident)
@@ -88,6 +97,7 @@ async def approve_draft(
     req: ApproveRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
+    user: dict[str, Any] = Depends(get_current_user),
 ) -> dict:
     """Approve a draft and queue SMTP send."""
     try:
@@ -103,7 +113,7 @@ async def approve_draft(
         raise HTTPException(status_code=400, detail={"error": f"Draft is already {draft.status}"})
 
     draft.status = "approved"
-    draft.approved_by = req.approved_by
+    draft.approved_by = req.approved_by or user.get("email") or user.get("id", "founder")
     draft.approved_at = datetime.now(timezone.utc)
 
     try:
@@ -120,6 +130,7 @@ async def reject_draft(
     draft_id: str,
     req: RejectRequest,
     db: AsyncSession = Depends(get_db),
+    _user: dict[str, Any] = Depends(get_current_user),
 ) -> dict:
     """Reject a draft."""
     try:

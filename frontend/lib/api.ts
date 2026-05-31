@@ -3,7 +3,14 @@
  * Reads token from localStorage, adds Authorization header.
  * Redirects to /login on 401.
  */
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+function resolveApiBase(): string {
+  const url = process.env.NEXT_PUBLIC_API_URL;
+  if (url) return url;
+  if (process.env.NODE_ENV === "development") return "http://localhost:8000";
+  throw new Error("NEXT_PUBLIC_API_URL must be set in non-development builds");
+}
+
+const API_BASE = resolveApiBase();
 
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;

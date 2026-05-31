@@ -89,4 +89,3 @@ def mock_smtp_client():
     mock.send_message = AsyncMock()
     mock.quit = AsyncMock()
     return mock
----

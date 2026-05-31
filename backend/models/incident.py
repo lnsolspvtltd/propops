@@ -1,7 +1,7 @@
 """SQLAlchemy models for PropOps."""
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Text, Float, DateTime, ForeignKey, Integer, Index
+from sqlalchemy import Column, String, Text, Float, DateTime, ForeignKey, Integer, Index, CheckConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from backend.core.database import Base
@@ -70,6 +70,10 @@ class Incident(Base):
         Index("idx_incidents_org_status", "org_id", "status"),
         Index("idx_incidents_thread", "thread_id"),
         Index("idx_incidents_urgency_status", "urgency", "status"),
+        CheckConstraint(
+            "urgency IN ('EMERGENCY', 'HIGH', 'MEDIUM', 'LOW')",
+            name="ck_incidents_urgency",
+        ),
     )
 
 

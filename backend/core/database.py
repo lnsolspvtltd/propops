@@ -17,11 +17,17 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["Base", "engine", "AsyncSessionLocal", "get_db"]
 
+# SQL echo routed through dedicated logger — avoids PII leaking to stdout in prod
+_db_logger = logging.getLogger("sqlalchemy.engine")
+if settings.environment == "development":
+    _db_logger.setLevel(logging.DEBUG)
+
 # Create async engine with connection pooling
 # Pool settings are tunable via environment variables (see config.py)
 engine = create_async_engine(
     settings.database_url,
-    echo=settings.environment == "development",  # SQL logging only in dev; disable for prod
+    echo=settings.environment == "development",
+    echo_pool=False,
     pool_size=settings.database_pool_size,
     max_overflow=settings.database_max_overflow,
     pool_pre_ping=True,  # Verify connections before use

@@ -1,4 +1,7 @@
-"""Authentication routes — register, login, and token management.
+"""Authentication routes — login + token management."""
+import logging
+import uuid
+from datetime import datetime, timedelta, timezone
 
 Real user auth backed by the `users` table.  bcrypt password hashing via
 passlib.  JWT tokens include sub, email, org_id, role, and jti claims.
@@ -118,6 +121,14 @@ def _make_token(user: User) -> str:
     }
     return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
 
+    expire = datetime.now(timezone.utc) + timedelta(hours=TOKEN_EXPIRE_HOURS)
+    payload = {
+        "sub": email,
+        "exp": expire,
+        "name": email.split("@")[0].title(),
+        "jti": str(uuid.uuid4()),
+    }
+    token = jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
 
 # ---------------------------------------------------------------------------
 # Routes

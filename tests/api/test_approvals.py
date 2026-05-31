@@ -95,4 +95,3 @@ async def test_approve_draft_auth_required(mock_db):
         mock_auth.side_effect = Exception("Not authenticated")
         
         # HTTPException(401) would be raised in actual endpoint
----

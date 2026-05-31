@@ -7,6 +7,7 @@ import logging
 import uuid
 import time
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -14,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.config import settings
+from backend.core.auth import get_current_user
 from backend.core.database import get_db
 from backend.models.incident import Incident, AIDraft
 
@@ -115,7 +117,10 @@ class SimulateResponse(BaseModel):
 
 
 @router.post("/seed", response_model=SeedResponse)
-async def seed_demo_data(db: AsyncSession = Depends(get_db)) -> SeedResponse:
+async def seed_demo_data(
+    db: AsyncSession = Depends(get_db),
+    _user: dict[str, Any] = Depends(get_current_user),
+) -> SeedResponse:
     """Inject realistic demo incidents with pending AI drafts. Idempotent."""
     _check_dev_only()
 
@@ -184,7 +189,11 @@ async def seed_demo_data(db: AsyncSession = Depends(get_db)) -> SeedResponse:
 
 
 @router.post("/simulate-email", response_model=SimulateResponse)
-async def simulate_email(req: SimulateRequest, db: AsyncSession = Depends(get_db)) -> SimulateResponse:
+async def simulate_email(
+    req: SimulateRequest,
+    db: AsyncSession = Depends(get_db),
+    _user: dict[str, Any] = Depends(get_current_user),
+) -> SimulateResponse:
     """Run a realistic scenario through the FULL AI pipeline (triage -> draft).
 
     For live investor demos. Synchronous so the response contains the result.

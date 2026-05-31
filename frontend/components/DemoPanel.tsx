@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import { apiFetch } from "@/lib/api";
 
 const SCENARIOS = [
   { id: "emergency_leak", label: "🚨 Emergency Leak", urgency: "EMERGENCY" },
@@ -20,25 +21,32 @@ interface Props {
 
 export default function DemoPanel({ onNewDraft }: Props) {
   const [loading, setLoading] = useState<string | null>(null);
-  const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const [error, setError] = useState<string | null>(null);
 
   async function simulate(scenario: string) {
     setLoading(scenario);
+    setError(null);
     try {
-      const r = await fetch(`${API}/api/v1/demo/simulate-email`, {
+      const r = await apiFetch("/api/v1/demo/simulate-email", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scenario }),
       });
-      if (!r.ok) return;
+      if (!r.ok) {
+        const msg = `Simulation failed (${r.status})`;
+        setError(msg);
+        console.error(msg);
+        return;
+      }
       const d = await r.json();
       onNewDraft({
         draft_id: d.draft_id,
         urgency: d.urgency,
         processing_time_ms: d.processing_time_ms,
       });
-    } catch {
-      /* silent */
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Simulation failed";
+      setError(msg);
+      console.error("Demo simulate error:", e);
     } finally {
       setLoading(null);
     }
@@ -50,6 +58,9 @@ export default function DemoPanel({ onNewDraft }: Props) {
     <div className="mx-3 mb-3 p-3 rounded-xl border border-dashed border-gray-700 bg-gray-900/50">
       <p className="text-xs font-semibold text-gray-400 mb-2">🎭 Demo Mode</p>
       <p className="text-[10px] text-gray-500 mb-2">Simulate an incoming email through the AI pipeline</p>
+      {error && (
+        <p className="text-[10px] text-red-400 mb-2" role="alert">{error}</p>
+      )}
       {loading && (
         <div className="mb-2 h-1.5 w-full rounded-full bg-gray-800 overflow-hidden">
           <div className="h-full w-2/3 bg-blue-500 animate-pulse rounded-full" />
