@@ -49,9 +49,7 @@ export default function DemoPanel({ onNewDraft }: Props) {
         ))}
       </div>
       {result && (
-        <p className="mt-2 text-xs text-green-400">
-          ✓ {result.urgency} draft created in {(result.ms / 1000).toFixed(1)}s — check the queue above
-        </p>
+        <p className="mt-2 text-xs text-green-400">✓ {result.urgency} in {result.ms}ms</p>
       )}
     </div>
   );
