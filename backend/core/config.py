@@ -54,9 +54,10 @@ class Settings(BaseSettings):
     fernet_key: str = ""
 
     # Demo login (development only)
-    enable_demo_login: bool = True
+    enable_demo_login: bool = False  # must be explicitly enabled; never on by default
     demo_email: str = "demo@propops.app"
     demo_password: str = "demo"
+    demo_org_id: str = ""  # required when enable_demo_login is True
 
     # Frontend
     frontend_url: str = "http://localhost:3000"

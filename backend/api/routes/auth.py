@@ -7,24 +7,23 @@ Demo-credential fallback is gated by settings.enable_demo_login and is
 disabled automatically in production regardless of that flag.
 """
 import logging
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
+from jose import jwt
 from passlib.context import CryptContext
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, EmailStr, field_validator
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.config import settings
 from backend.core.database import get_db
 from backend.models.organisation import Organisation
 from backend.models.user import User
-
-try:
-    from jose import jwt
-except ImportError:
-    import jwt  # type: ignore[no-redef]
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -35,6 +34,10 @@ TOKEN_EXPIRE_HOURS = 24
 # bcrypt context — auto-handles future algorithm migrations
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
+# Dummy hash for constant-time comparison when the email is not found.
+# Prevents email enumeration via timing oracle (bcrypt verify ~100 ms regardless).
+_DUMMY_HASH = "$2b$12$dummy.hash.for.timing.protection.only.xxxxxxxxxxxxxxxxx"
+
 
 # ---------------------------------------------------------------------------
 # Pydantic schemas
@@ -44,10 +47,10 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 class RegisterRequest(BaseModel):
     """Payload for POST /register."""
 
-    email: str
+    email: EmailStr  # validates RFC 5322 format
     password: str
     org_id: uuid.UUID
-    role: str = "member"
+    role: Literal["member", "manager"] = "member"  # admin only via invite/migration
 
     @field_validator("password")
     @classmethod
@@ -135,7 +138,7 @@ async def register(
     if org is None:
         raise HTTPException(
             status_code=404,
-            detail={"error": "org_not_found", "org_id": str(req.org_id)},
+            detail={"error": "org_not_found", "message": "Organisation not found"},
         )
 
     # 2. Check for duplicate email within this org
@@ -151,7 +154,7 @@ async def register(
     # 3. Hash password — the plaintext is discarded immediately
     hashed = pwd_context.hash(req.password)
 
-    # 4. Persist
+    # 4. Persist — wrapped in IntegrityError catch to handle TOCTOU race
     new_user = User(
         org_id=req.org_id,
         email=req.email,
@@ -159,10 +162,16 @@ async def register(
         role=req.role,
         email_verified=False,
     )
-    db.add(new_user)
-    await db.flush()  # populate new_user.id before commit
-    await db.commit()
-    await db.refresh(new_user)
+    try:
+        db.add(new_user)
+        await db.commit()
+        await db.refresh(new_user)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "email_exists", "message": "Email already registered in this organisation"},
+        )
 
     logger.info("register: new user id=%s email=%s org=%s", new_user.id, new_user.email, new_user.org_id)
     return RegisterResponse(
@@ -184,8 +193,9 @@ async def login(
     bcrypt hash, and issue a token.
 
     Demo fallback: if settings.enable_demo_login is True **and** the
-    environment is not production, the legacy demo credentials are accepted as
-    a secondary path so existing development workflows keep working.
+    environment is not production, the configured demo credentials are accepted
+    as a secondary path so existing development workflows keep working.
+    Demo path only accepts the exact configured demo_email — not any email.
     """
     email = req.email.strip().lower()
 
@@ -217,32 +227,46 @@ async def login(
             },
         )
 
+    # Dummy bcrypt verify to consume constant time when user not found (prevents email enumeration)
+    pwd_context.verify(req.password, _DUMMY_HASH)  # constant-time, result discarded
+
     # ------------------------------------------------------------------
     # Demo-credential fallback (non-production only)
     # ------------------------------------------------------------------
-    if settings.enable_demo_login and settings.environment != "production":
-        if not settings.demo_email or not settings.demo_password:
-            logger.error("login: demo credentials not configured")
-            raise HTTPException(status_code=500, detail={"error": "server_configuration_error"})
+    if (
+        settings.enable_demo_login
+        and settings.environment != "production"
+        and settings.demo_email
+        and settings.demo_password
+    ):
+        # demo_org_id must be configured — refuse to issue org_id=None tokens
+        if not settings.demo_org_id:
+            logger.error("login: demo_org_id not configured — demo login disabled")
+            raise HTTPException(status_code=503, detail={"error": "demo_not_configured", "message": "Demo login is not fully configured"})
 
-        is_demo = (email == settings.demo_email and req.password == settings.demo_password) or (
-            settings.environment == "development" and req.password == settings.demo_password
-        )
-        if is_demo:
+        email_ok = secrets.compare_digest(email, settings.demo_email.strip().lower())
+        pass_ok = secrets.compare_digest(req.password, settings.demo_password)
+        if email_ok and pass_ok:
             expire = datetime.now(timezone.utc) + timedelta(hours=TOKEN_EXPIRE_HOURS)
             payload = {
-                "sub": email,
-                "email": email,
-                "org_id": None,
-                "role": "admin",
+                "sub": settings.demo_email,
+                "email": settings.demo_email,
+                "org_id": str(settings.demo_org_id),
+                "role": "founder",  # not "admin" — demo role is "founder"
                 "jti": str(uuid.uuid4()),
                 "exp": expire,
+                "name": settings.demo_email.split("@")[0].title(),
             }
             token = jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
-            logger.info("login: demo session for email=%s", email)
+            logger.info("login: demo session for email=%s", settings.demo_email)
             return LoginResponse(
                 access_token=token,
-                user={"email": email, "name": email.split("@")[0].title(), "role": "admin"},
+                user={
+                    "email": settings.demo_email,
+                    "name": settings.demo_email.split("@")[0].title(),
+                    "role": "founder",
+                    "org_id": str(settings.demo_org_id),
+                },
             )
 
     # No match in users table and demo fallback didn't apply
