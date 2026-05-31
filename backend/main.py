@@ -74,7 +74,7 @@ try:
     app.include_router(units.router, prefix="/api/v1")
     app.include_router(vendors.router, prefix="/api/v1")
     app.include_router(onboarding.router, prefix="/api/v1")
-    app.include_router(incidents_assign.router, prefix="/api/v1")
+    app.include_router(incidents_assign.router, prefix="/api/v1/incidents", tags=["incidents"])
     logger.info("Phase 2 routes registered")
 except ImportError as e:
     logger.info("Phase 2 routes not yet available: %s", e)
