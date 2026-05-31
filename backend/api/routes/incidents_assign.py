@@ -45,6 +45,7 @@ async def assign_incident(
     incident.vendor_id = vendor.id  # type: ignore[attr-defined]
     incident.assigned_at = datetime.now(timezone.utc)  # type: ignore[attr-defined]
     await db.flush()
+    await db.commit()
 
     unit = None
     if incident.unit_id:
@@ -78,4 +79,5 @@ async def resolve_incident(
     incident.status = "CLOSED"
     incident.resolved_at = datetime.now(timezone.utc)
     await db.flush()
+    await db.commit()
     return {"status": "resolved", "incident_id": str(incident_id)}
