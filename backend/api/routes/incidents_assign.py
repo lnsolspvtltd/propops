@@ -9,14 +9,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.database import get_db
+from backend.core.config import get_settings
 from backend.models.incident import Incident, Unit
 from backend.models.vendor import Vendor
 from backend.services.vendor_notifier import notify_vendor
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/incidents", tags=["incidents"])
-
-PM_CONTACT_EMAIL = "hello@propops.app"  # TODO: load from org settings in Phase 3
 
 
 class AssignRequest(BaseModel):
@@ -51,6 +50,9 @@ async def assign_incident(
     if incident.unit_id:
         unit = (await db.execute(select(Unit).where(Unit.id == incident.unit_id))).scalar_one_or_none()
 
+    settings = get_settings()
+    pm_contact_email = settings.pm_contact_email if hasattr(settings, 'pm_contact_email') else "hello@propops.app"
+
     await notify_vendor(
         vendor_email=vendor.email,
         vendor_name=vendor.name,
@@ -58,7 +60,7 @@ async def assign_incident(
         incident_summary=incident.ai_summary,
         tenant_name=unit.tenant_name if unit else None,
         unit_label=unit.unit_number if unit else None,
-        pm_contact_email=PM_CONTACT_EMAIL,
+        pm_contact_email=pm_contact_email,
     )
 
     return {"status": "assigned", "vendor_id": str(vendor.id), "vendor_name": vendor.name}
