@@ -1,12 +1,4 @@
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
-from .models import Base
+"""Re-export get_db from core.database for route compatibility."""
+from backend.core.database import get_db  # noqa: F401
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://user:password@localhost/propops")
-
-engine = create_async_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-async def get_db():
-    async with SessionLocal() as db:
-        yield db
+__all__ = ["get_db"]
