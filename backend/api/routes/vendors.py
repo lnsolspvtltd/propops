@@ -67,8 +67,8 @@ async def create_vendor(body: VendorCreate, db: AsyncSession = Depends(get_db)) 
         specialty=body.specialty,
     )
     db.add(vendor)
-    await db.flush()
     await db.commit()
+    await db.refresh(vendor)
     return VendorOut.model_validate(vendor)
 
 
