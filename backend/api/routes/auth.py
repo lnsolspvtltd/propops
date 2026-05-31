@@ -14,10 +14,6 @@ router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 ALGORITHM = "HS256"
 TOKEN_EXPIRE_HOURS = 24
 
-# Demo credentials — gate on development mode only
-DEMO_EMAIL = "demo@propops.app"
-DEMO_PASSWORD = "propops2026"
-
 
 class LoginRequest(BaseModel):
     email: str
@@ -34,19 +30,23 @@ class LoginResponse(BaseModel):
 async def login(req: LoginRequest) -> LoginResponse:
     """Authenticate and return JWT.
 
-    Demo mode: accepts demo@propops.app / propops2026
+    Demo mode: accepts demo credentials only in development/test environments
     In production, swap this for a real user table lookup.
     """
     email = req.email.strip().lower()
-    # Demo auth — accept demo creds or any email with demo password in development
-    is_valid = (
-        (email == DEMO_EMAIL and req.password == DEMO_PASSWORD) or
-        (settings.environment == "development" and req.password == DEMO_PASSWORD)
-    )
     
     # Security check: prevent demo credentials in production
-    if settings.environment == "production" and req.password == DEMO_PASSWORD:
-        raise RuntimeError("Demo credentials not allowed in production")
+    if settings.environment == "production" and req.password == settings.demo_password:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "Demo credentials not allowed in production"}
+        )
+    
+    # Demo auth — accept demo creds or any email with demo password in development
+    is_valid = (
+        (email == settings.demo_email and req.password == settings.demo_password) or
+        (settings.environment == "development" and req.password == settings.demo_password)
+    )
     
     if not is_valid:
         raise HTTPException(status_code=401, detail={"error": "Invalid credentials"})
