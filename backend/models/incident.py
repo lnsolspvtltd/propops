@@ -1,7 +1,7 @@
 """SQLAlchemy models for PropOps."""
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Text, Float, DateTime, ForeignKey, Integer
+from sqlalchemy import Column, String, Text, Float, DateTime, ForeignKey, Integer, Index
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from backend.core.database import Base

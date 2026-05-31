@@ -11,8 +11,11 @@ import logging
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from backend.core.config import settings
+from backend.models.base import Base
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["Base", "engine", "AsyncSessionLocal", "get_db"]
 
 # Create async engine with connection pooling
 # Pool settings are tunable via environment variables (see config.py)
