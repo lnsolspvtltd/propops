@@ -84,7 +84,7 @@ async def get_dashboard_stats(db: AsyncSession = Depends(get_db)) -> DashboardSt
         .outerjoin(Unit, Incident.unit_id == Unit.id)
         .where(Incident.status != "CLOSED")
         .order_by(Incident.created_at.desc())
-        .limit(5)
+        .limit(10)
     )).all()
     recent_incidents = [
         RecentIncident(
