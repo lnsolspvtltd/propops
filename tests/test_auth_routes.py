@@ -240,13 +240,13 @@ async def test_login_wrong_password_returns_401(client: AsyncClient, verified_us
 
 
 @pytest.mark.asyncio
-async def test_login_unverified_user_returns_403(client: AsyncClient, unverified_user: User):
-    """An unverified user receives 403 email_not_verified."""
+async def test_login_unverified_user_returns_401(client: AsyncClient, unverified_user: User):
+    """An unverified user receives 401 email_not_verified (unified to prevent oracle)."""
     resp = await client.post(
         "/api/v1/auth/login",
         json={"email": unverified_user.email, "password": "correctpassword"},
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 401
     assert resp.json()["detail"]["error"] == "email_not_verified"
 
 
@@ -267,10 +267,7 @@ async def test_login_unknown_email_returns_401(client: AsyncClient, org: Organis
 @pytest.mark.asyncio
 async def test_login_jwt_contains_org_id(client: AsyncClient, verified_user: User):
     """The returned JWT must contain org_id in its payload (not from client input)."""
-    try:
-        from jose import jwt as jose_jwt
-    except ImportError:
-        import jwt as jose_jwt  # type: ignore
+    from jose import jwt as jose_jwt
 
     from backend.core.config import settings
 

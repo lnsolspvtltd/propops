@@ -28,15 +28,14 @@ from backend.models.user import User
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
-ALGORITHM = "HS256"
 TOKEN_EXPIRE_HOURS = 24
 
 # bcrypt context — auto-handles future algorithm migrations
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# Dummy hash for constant-time comparison when the email is not found.
-# Prevents email enumeration via timing oracle (bcrypt verify ~100 ms regardless).
-_DUMMY_HASH = "$2b$12$dummy.hash.for.timing.protection.only.xxxxxxxxxxxxxxxxx"
+# Pre-computed bcrypt hash at cost 12 — used for constant-time dummy verification
+# to prevent email enumeration via response time. The plaintext is irrelevant.
+_DUMMY_HASH = "$2b$12$eixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW"
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +109,7 @@ def _make_token(user: User) -> str:
         "jti": str(uuid.uuid4()),
         "exp": expire,
     }
-    return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
+    return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
 
 
 # ---------------------------------------------------------------------------
@@ -141,20 +140,10 @@ async def register(
             detail={"error": "org_not_found", "message": "Organisation not found"},
         )
 
-    # 2. Check for duplicate email within this org
-    dup_result = await db.execute(
-        select(User).where(User.email == req.email, User.org_id == req.org_id)
-    )
-    if dup_result.scalar_one_or_none() is not None:
-        raise HTTPException(
-            status_code=409,
-            detail={"error": "email_already_registered"},
-        )
-
-    # 3. Hash password — the plaintext is discarded immediately
+    # 2. Hash password — the plaintext is discarded immediately
     hashed = pwd_context.hash(req.password)
 
-    # 4. Persist — wrapped in IntegrityError catch to handle TOCTOU race
+    # 3. Persist — IntegrityError handles duplicate email (including TOCTOU race)
     new_user = User(
         org_id=req.org_id,
         email=req.email,
@@ -170,7 +159,7 @@ async def register(
         await db.rollback()
         raise HTTPException(
             status_code=409,
-            detail={"error": "email_exists", "message": "Email already registered in this organisation"},
+            detail={"error": "email_already_registered"},
         )
 
     logger.info("register: new user id=%s email=%s org=%s", new_user.id, new_user.email, new_user.org_id)
@@ -206,14 +195,18 @@ async def login(
     db_user = user_result.scalar_one_or_none()
 
     if db_user is not None:
+        # Check email_verified before password to avoid 401 vs 403 timing oracle
+        if not db_user.email_verified:
+            logger.warning("login: unverified email for user id=%s", db_user.id)
+            raise HTTPException(
+                status_code=401,
+                detail={"error": "email_not_verified", "message": "Verify your email before logging in"},
+            )
+
         # Verify bcrypt hash — constant-time comparison handled by passlib
         if not pwd_context.verify(req.password, db_user.hashed_password):
             logger.warning("login: wrong password for email=%s", email)
             raise HTTPException(status_code=401, detail={"error": "invalid_credentials"})
-
-        if not db_user.email_verified:
-            logger.warning("login: unverified email for user id=%s", db_user.id)
-            raise HTTPException(status_code=403, detail={"error": "email_not_verified"})
 
         token = _make_token(db_user)
         logger.info("login: user id=%s email=%s org=%s", db_user.id, db_user.email, db_user.org_id)
@@ -228,7 +221,10 @@ async def login(
         )
 
     # Dummy bcrypt verify to consume constant time when user not found (prevents email enumeration)
-    pwd_context.verify(req.password, _DUMMY_HASH)  # constant-time, result discarded
+    try:
+        pwd_context.verify(req.password, _DUMMY_HASH)  # constant-time guard; result discarded
+    except Exception:
+        pass  # never propagate — timing oracle protection only
 
     # ------------------------------------------------------------------
     # Demo-credential fallback (non-production only)
@@ -241,8 +237,8 @@ async def login(
     ):
         # demo_org_id must be configured — refuse to issue org_id=None tokens
         if not settings.demo_org_id:
-            logger.error("login: demo_org_id not configured — demo login disabled")
-            raise HTTPException(status_code=503, detail={"error": "demo_not_configured", "message": "Demo login is not fully configured"})
+            logger.error("Demo login missing demo_org_id configuration")
+            raise HTTPException(status_code=503, detail={"error": "service_unavailable"})
 
         email_ok = secrets.compare_digest(email, settings.demo_email.strip().lower())
         pass_ok = secrets.compare_digest(req.password, settings.demo_password)
@@ -257,7 +253,7 @@ async def login(
                 "exp": expire,
                 "name": settings.demo_email.split("@")[0].title(),
             }
-            token = jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
+            token = jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
             logger.info("login: demo session for email=%s", settings.demo_email)
             return LoginResponse(
                 access_token=token,
