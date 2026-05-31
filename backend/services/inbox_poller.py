@@ -1,17 +1,14 @@
 import imaplib
 from email.parser import BytesParser
 from sqlalchemy.ext.asyncio import AsyncSession
-from backend.core.crypto import decrypt
-import logging
-
-logger = logging.getLogger(__name__)
+from sqlalchemy.orm import Session
 
 async def poll_imap(
     host: str,
     port: int,
     username: str,
     password_enc: str,
-    db: AsyncSession,
+    db: Session = Depends(get_db),
 ):
     try:
         # Decrypt password
@@ -26,8 +23,7 @@ async def poll_imap(
 
         # Search for unread messages
         status, data = imap.search(None, "UNSEEN")
-        if not data or not data[0]:
-            imap.logout()
+        if not data:
             return False
 
         # Process each message
@@ -42,8 +38,6 @@ async def poll_imap(
             # Log the message details
             logger.info(f"New message received: Subject: {subject}, Sender: {sender}")
 
-        # Logout from IMAP server
-        imap.logout()
         return True
 
     except Exception as e:
