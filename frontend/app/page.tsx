@@ -49,11 +49,12 @@ export default function ApprovalQueue() {
     abortRef.current?.abort();
     abortRef.current = new AbortController();
     try {
-      const res = await apiFetch("/api/v1/approvals/pending", {
+      const res = await apiFetch("/api/v1/approvals/pending?limit=100&offset=0", {
         signal: abortRef.current.signal,
       });
       if (!res.ok) throw new Error(`Server error ${res.status}`);
-      const data: PendingDraft[] = await res.json();
+      const payload = await res.json();
+      const data: PendingDraft[] = Array.isArray(payload) ? payload : payload.drafts ?? [];
       const sorted = [...data].sort((a, b) => {
         const order = { EMERGENCY: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
         return (order[a.urgency] ?? 9) - (order[b.urgency] ?? 9);

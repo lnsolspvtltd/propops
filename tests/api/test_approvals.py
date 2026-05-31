@@ -10,21 +10,24 @@ from backend.api.routes import approvals as approvals_module
 from backend.api.routes.approvals import router
 from backend.core.auth import get_current_user
 from backend.core.database import get_db
-from backend.models.incident import AIDraft
+from backend.models.incident import AIDraft, Incident
 
 
 @pytest.fixture
-def mock_db():
-    """Mock async database session."""
-    return AsyncMock()
+def mock_incident():
+    """Mock Incident for org-scoped approval tests."""
+    incident = MagicMock(spec=Incident)
+    incident.org_id = uuid4()
+    incident.title = "Test incident"
+    return incident
 
 
 @pytest.fixture
-def mock_draft():
+def mock_draft(mock_incident):
     """Mock AIDraft instance."""
     draft = MagicMock(spec=AIDraft)
     draft.id = uuid4()
-    draft.incident_id = uuid4()
+    draft.incident_id = mock_incident.id if hasattr(mock_incident, "id") else uuid4()
     draft.subject = "Test Subject"
     draft.body = "Test Body"
     draft.status = "pending"
@@ -36,12 +39,23 @@ def mock_draft():
 
 
 @pytest.fixture
+def mock_db():
+    """Mock async database session."""
+    return AsyncMock()
+
+
+@pytest.fixture
 def app_with_router(mock_db):
     app = FastAPI()
     app.include_router(router)
 
     async def _override_user():
-        return {"id": "founder", "email": "founder@example.com"}
+        return {
+            "id": "founder",
+            "email": "founder@example.com",
+            "role": "founder",
+            "org_id": "00000000-0000-0000-0000-000000000001",
+        }
 
     async def _override_db():
         yield mock_db
@@ -53,12 +67,13 @@ def app_with_router(mock_db):
 
 
 @pytest.mark.asyncio
-async def test_approve_draft_success(mock_draft, app_with_router, mock_db):
+async def test_approve_draft_success(mock_draft, mock_incident, app_with_router, mock_db):
     """Test successful draft approval with authenticated user."""
+    mock_incident.org_id = uuid4()
     draft_id = str(mock_draft.id)
 
     mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = mock_draft
+    mock_result.one_or_none.return_value = (mock_draft, mock_incident)
     mock_db.execute = AsyncMock(return_value=mock_result)
 
     with patch("backend.api.routes.approvals.send_approved_draft"):
@@ -95,7 +110,7 @@ async def test_approve_draft_invalid_format(app_with_router):
 async def test_approve_draft_not_found(app_with_router, mock_db):
     """Test approval when draft doesn't exist returns 404."""
     mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = None
+    mock_result.one_or_none.return_value = None
     mock_db.execute = AsyncMock(return_value=mock_result)
 
     async with AsyncClient(

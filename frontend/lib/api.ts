@@ -2,6 +2,11 @@
  * Authenticated fetch wrapper.
  * Reads token from localStorage, adds Authorization header.
  * Redirects to /login on 401.
+ *
+ * SECURITY NOTE: Tokens are stored in localStorage for the demo/beta UI.
+ * This is vulnerable to XSS — any script on the page can read the token.
+ * Production hardening should move to httpOnly Secure SameSite cookies set by
+ * the backend login endpoint. Until then, keep CSP strict and avoid inline scripts.
  */
 function resolveApiBase(): string {
   const url = process.env.NEXT_PUBLIC_API_URL;

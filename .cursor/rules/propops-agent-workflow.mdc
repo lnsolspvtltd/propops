@@ -49,12 +49,18 @@ Process **oldest open issue first** unless labels/dependencies say otherwise. Do
 1. **Discover** — List open issues (`curl.exe` or `gh`). Read full body + acceptance criteria.
 2. **Branch** — Checkout existing issue branch from `origin` or create: `phase3/issue-{number}` (match repo convention).
 3. **Implement** — Minimal diff; match existing FastAPI/Next.js patterns; run tests before push.
+3b. **Pre-FORGE self-review (mandatory before every commit/push)** — Before committing in any review cycle, the agent must "wear the FORGE hat":
+   - Read the full diff since last push
+   - Review as FORGE would: security, auth, org scoping, tests, XSS/localStorage, production guards, error handling, duplicate validators
+   - Fix **all** issues found locally — do not push and wait for FORGE to catch obvious problems
+   - Only commit + push when self-review finds no remaining fixable issues
+   - **Then** invoke FORGE (see below)
 4. **Push** — `git push -u origin HEAD` on the issue branch only (not force-push `main`).
 5. **PR** — Open PR to `main`; body includes Summary + Test plan; link `Closes #N`.
 6. **Invoke FORGE** — Request code review (see **FORGE review invocation** below). Do not wait passively.
-7. **Review loop (max 3 iterations)** — Poll until FORGE finishes → implement all feedback → push → re-invoke. Track **1/3, 2/3, 3/3**.
+7. **Review loop** — Poll until FORGE finishes → implement all feedback → **self-review** → push → re-invoke. Track iterations in batches of 3 (see **Review iteration batches** below).
 8. **Merge gate** — See **NEVER merge without FORGE approval** below. Only merge after explicit APPROVED review.
-9. **Escalation** — After **3 iterations** without FORGE approval: **STOP**, post summary on PR, ask **external user** for decision. Do **not** merge.
+9. **Escalation** — After a batch of **3 iterations** without FORGE approval: **STOP**, post summary on PR, ask **external user** for decision. Do **not** merge. External user may authorize another batch (iterations 4–6, 7–9, …).
 10. **Next** — Return to step 1 for the next open issue only after merge + issue closed.
 
 ## NEVER merge without FORGE approval (mandatory — no exceptions)
@@ -111,21 +117,47 @@ FORGE posts a GitHub PR review comment (`## 🔨 FORGE Code Review`) with rating
 | `python scripts/run_forge_reviews.py --pr URL --max-iter 1` | One-shot review only (agent still fixes locally) |
 | GitHub Actions `forge-review.yml` | Only on `ln-sols-multi-agent` repo, not PropOps |
 
-### 3-iteration review cap (mandatory)
+### Pre-FORGE self-review gate (mandatory — every cycle)
 
-Each PR gets at most **3 complete cycles**:
+**Before every commit/push** in a FORGE review cycle:
 
-1. **Invoke FORGE** → wait for review comment/review to appear
-2. **Implement all feedback** on the issue branch → run tests → push
-3. **Increment counter** (1/3, 2/3, 3/3) and repeat from step 1
+1. Read changed files / diff since last push
+2. Self-review as FORGE: security, auth headers, org scoping, test assertions, production guards, error handling, pagination, token storage risks
+3. Fix all issues you can find — do **not** rely on FORGE to catch obvious gaps
+4. Run tests locally
+5. Only then commit + push
+6. Invoke FORGE via `review_pr()`
 
-**After iteration 3 without approval:**
+**Goal:** Reduce FORGE turnaround time and API cost by shipping cleaner diffs.
 
-- Post a PR comment: iteration count, remaining issues, merge blocked
+### Review iteration batches
+
+Each PR uses **batches of 3 FORGE cycles**. Track as **N/3 within batch** (e.g. batch 2 = iterations 4/6, 5/6, 6/6).
+
+| Batch | Iterations | Escalation trigger |
+|-------|------------|-------------------|
+| 1 | 1–3 | After iter 3 without APPROVED → stop, post PR comment, ask external user |
+| 2 | 4–6 | Same (PR #43 batch 2 authorized by founder) |
+| 3+ | 7–9, … | Requires explicit external user authorization per batch |
+
+**PR #43 history:** Batch 1 (iter 1–3) completed with CHANGES_REQUESTED each time. Batch 2 (iter 4–6) in progress.
+
+### 3-iteration review cap per batch (mandatory)
+
+Each **batch** gets at most **3 complete cycles**:
+
+1. **Self-review** diff → fix → commit + push
+2. **Invoke FORGE** → wait for review comment/review to appear
+3. **Implement all feedback** → return to step 1
+4. Increment counter within batch (e.g. 4/6, 5/6, 6/6) and repeat
+
+**After iteration 3 of a batch without approval:**
+
+- Post a PR comment: batch number, iteration count, remaining issues, merge blocked
 - **STOP** — do not merge, do not start next issue
-- Ask **external user** (founder) to approve merge or give direction
+- Ask **external user** (founder) to approve merge, authorize next batch, or give direction
 
-**Goal:** Fix everything FORGE asks within ≤3 rounds so approval happens before escalation.
+**Goal:** Fix everything FORGE asks within ≤3 rounds per batch so approval happens before escalation.
 
 ### What counts as FORGE approval
 

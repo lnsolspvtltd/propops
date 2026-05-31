@@ -56,11 +56,8 @@ class Settings(BaseSettings):
     # Demo login (development only)
     enable_demo_login: bool = False  # must be explicitly enabled; never on by default
     demo_email: str = "demo@propops.app"
-    demo_password: str = ""
-    demo_org_id: str = ""  # required when enable_demo_login is True
-
-    # Frontend
-    frontend_url: str = "http://localhost:3000"
+    demo_password: str = "demo"
+    demo_org_id: str = "00000000-0000-0000-0000-000000000001"
 
     # Optional integrations
     twilio_account_sid: str = ""

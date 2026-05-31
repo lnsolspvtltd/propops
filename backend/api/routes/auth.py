@@ -4,12 +4,14 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header
 from jose import jwt, JWTError
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.config import settings
 from backend.core.auth import revoke_token_jti
+from backend.core.database import get_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -81,74 +83,54 @@ class LoginResponse(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
-
-def _make_token(user: User) -> str:
-    """Build a signed JWT for *user*.
-
-    Claims:
-    - sub   — str(user.id)
-    - email — user.email
-    - org_id — str(user.org_id)
-    - role  — user.role
-    - jti   — fresh UUID4 (allows future revocation)
-    - exp   — jwt_access_token_expire_minutes from now
+    Demo mode: accepts demo credentials only in development/test environments.
+    In production, swap this for a real user table lookup.
     """
-    # Validate required settings exist
     if not settings.demo_email or not settings.demo_password:
         logger.error("Missing required demo credentials in settings")
         raise HTTPException(
             status_code=500,
-            detail={"error": "Server configuration error"}
+            detail={"error": "Server configuration error"},
         )
-    
+
     email = req.email.strip().lower()
 
-    # Production: demo login disabled entirely — real user table required
     if settings.environment == "production":
         raise HTTPException(
             status_code=403,
             detail={"error": "Demo login disabled in production"},
         )
-    
-    # Demo auth — constant-time password compare (development only)
+
     password_ok = secrets.compare_digest(req.password, settings.demo_password)
     email_ok = email == settings.demo_email.strip().lower()
     is_valid = (email_ok and password_ok) or (
         settings.environment == "development" and password_ok
     )
-    
+
     if not is_valid:
         raise HTTPException(status_code=401, detail={"error": "Invalid credentials"})
 
     expire = datetime.now(timezone.utc) + timedelta(hours=TOKEN_EXPIRE_HOURS)
     payload = {
         "sub": email,
+        "email": email,
         "exp": expire,
         "name": email.split("@")[0].title(),
         "jti": str(uuid.uuid4()),
+        "org_id": settings.demo_org_id,
+        "role": "founder",
     }
     token = jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
-
-@router.post("/register", response_model=RegisterResponse, status_code=201)
-async def register(
-    req: RegisterRequest,
-    db: AsyncSession = Depends(get_db),
-) -> RegisterResponse:
-    """Create a new user account.
-
-    Checks:
-    - org_id must reference an existing Organisation (404 otherwise)
-    - email must be unique within the org (409 otherwise)
-    - password is hashed with bcrypt before persistence
-    """
-    # 1. Verify org exists
-    org_result = await db.execute(
-        select(Organisation).where(Organisation.id == req.org_id)
+    logger.info("Login: %s", email)
+    return LoginResponse(
+        access_token=token,
+        user={
+            "email": email,
+            "name": email.split("@")[0].title(),
+            "org_id": settings.demo_org_id,
+            "role": "founder",
+        },
     )
     org = org_result.scalar_one_or_none()
     if org is None:
@@ -295,7 +277,10 @@ async def login(
 
 
 @router.post("/logout")
-async def logout(authorization: str | None = Header(None)) -> dict:
+async def logout(
+    authorization: str | None = Header(None),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
     """Revoke the current token's JTI server-side, then client discards it."""
     if authorization:
         parts = authorization.split()
@@ -305,8 +290,12 @@ async def logout(authorization: str | None = Header(None)) -> dict:
                     parts[1], settings.secret_key, algorithms=[ALGORITHM]
                 )
                 jti = payload.get("jti")
+                exp = payload.get("exp")
+                expires_at = (
+                    datetime.fromtimestamp(exp, tz=timezone.utc) if exp else None
+                )
                 if jti:
-                    revoke_token_jti(jti)
+                    await revoke_token_jti(jti, db, expires_at=expires_at)
             except JWTError:
                 logger.warning("Logout: could not decode token for revocation")
     return {"status": "logged_out"}

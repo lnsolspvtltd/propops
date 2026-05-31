@@ -80,15 +80,38 @@ error: invalid path 'relative/path/to/file.py\nACTION: create | modify'
 
 If `CHANGES_REQUESTED`: fix on issue branch, push, reply to comments, re-invoke FORGE, re-poll. If no reviews yet: invoke FORGE — do **not** merge.
 
-### Mandate: 3-iteration FORGE review cap
+### Mandate: Pre-FORGE self-review gate (every cycle)
 
-After each PR open/update:
+**Before every commit/push** during a FORGE review loop:
 
-1. **Invoke FORGE** via Helix `review_pr()` (see `.cursor/rules/propops-agent-workflow.mdc`)
-2. **Wait** for FORGE review comment on the PR
-3. **Implement all feedback**, push to same issue branch
-4. **Repeat** — max **3** complete review→fix→push cycles (track 1/3, 2/3, 3/3)
-5. After **3 iterations** without FORGE approval: **STOP**, post escalation comment on PR, ask **external user** — do **not** merge
+1. Read diff since last push
+2. Self-review as FORGE (security, auth, org scoping, tests, prod guards, token storage)
+3. Fix all fixable issues locally
+4. Run tests
+5. Commit + push only when self-review is clean
+6. Then invoke FORGE
+
+**Goal:** Fewer FORGE round-trips and lower API cost.
+
+### Mandate: FORGE review batches (3 iterations each)
+
+- **Batch 1:** iterations 1–3 — PR #43 completed with CHANGES_REQUESTED each time; escalation posted
+- **Batch 2:** iterations 4–6 — authorized by founder for PR #43
+- After each batch of 3 without APPROVED: STOP, post PR comment, ask external user
+- Next batch (7–9, …) requires explicit external authorization
+
+Track within batch: e.g. `4/6`, `5/6`, `6/6`.
+
+### Mandate: 3-iteration FORGE review cap (per batch)
+
+After each PR open/update (within an authorized batch):
+
+1. **Self-review** diff as FORGE → fix → commit + push
+2. **Invoke FORGE** via Helix `review_pr()` (see `.cursor/rules/propops-agent-workflow.mdc`)
+3. **Wait** for FORGE review comment on the PR
+4. **Implement all feedback**, self-review again, push to same issue branch
+5. **Repeat** — max **3** complete cycles per batch (track e.g. 4/6, 5/6, 6/6)
+6. After **3 iterations in batch** without FORGE approval: **STOP**, post escalation comment on PR, ask **external user** — do **not** merge
 
 **Do NOT use** `run_review_loop` for PropOps — it auto-fixes via ANVIL and may auto-merge.
 

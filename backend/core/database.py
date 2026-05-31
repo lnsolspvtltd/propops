@@ -12,6 +12,7 @@ from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from backend.core.config import settings
 from backend.models.base import Base
+import backend.models.revoked_token  # noqa: F401 — register RevokedToken metadata
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +66,9 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         try:
             yield session
-            await session.commit()
-        except Exception as e:
+            if session.new or session.dirty or session.deleted:
+                await session.commit()
+        except Exception:
             await session.rollback()
             raise
 

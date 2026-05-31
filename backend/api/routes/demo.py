@@ -21,6 +21,8 @@ from backend.models.incident import Incident, AIDraft
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_DEMO_ORG = uuid.UUID(settings.demo_org_id)
+
 
 def _check_dev_only():
     if settings.environment != "development":
@@ -149,6 +151,7 @@ async def seed_demo_data(
     for i, scenario in enumerate(SEED_INCIDENTS):
         inc = Incident(
             id=uuid.uuid4(),
+            org_id=DEFAULT_DEMO_ORG,
             title=scenario["title"],
             category=scenario["category"],
             urgency=scenario["urgency"],
@@ -224,6 +227,7 @@ async def simulate_email(
 
     inc = Incident(
         id=uuid.uuid4(),
+        org_id=DEFAULT_DEMO_ORG,
         title=triage.title if triage else scenario["title"],
         category=triage.category if triage else scenario["category"],
         urgency=triage.urgency if triage else scenario["urgency"],
