@@ -277,7 +277,7 @@ async def test_login_jwt_contains_org_id(client: AsyncClient, verified_user: Use
     )
     assert resp.status_code == 200
     token = resp.json()["access_token"]
-    payload = jose_jwt.decode(token, settings.secret_key, algorithms=["HS256"])
+    payload = jose_jwt.decode(token, settings.secret_key, algorithms=[settings.jwt_algorithm])
     assert payload.get("org_id") == str(verified_user.org_id)
     assert payload.get("email") == verified_user.email
     assert "jti" in payload

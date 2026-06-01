@@ -107,10 +107,7 @@ async def get_current_user(
 
     except Exception as e:
         logger.error(f"get_current_user: Unexpected error: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail="Internal error validating token"
-        )
+        raise HTTPException(status_code=401, detail={"error": "internal_error"})
 
 
 def assert_org(user: Dict[str, Any], requested_org_id) -> None:
