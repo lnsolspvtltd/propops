@@ -10,8 +10,6 @@ Requires:
     passlib[bcrypt]
 """
 import uuid
-from unittest.mock import patch
-
 import pytest
 from httpx import AsyncClient, ASGITransport
 from passlib.context import CryptContext
@@ -215,7 +213,7 @@ async def test_login_real_user_happy_path(client: AsyncClient, verified_user: Us
     """A verified user can log in and receives a JWT with correct claims."""
     resp = await client.post(
         "/api/v1/auth/login",
-        json={"email": verified_user.email, "password": "correctpassword"},
+        json={"email": verified_user.email, "password": "correctpassword", "org_id": str(verified_user.org_id)},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -233,7 +231,7 @@ async def test_login_wrong_password_returns_401(client: AsyncClient, verified_us
     """Wrong password returns 401."""
     resp = await client.post(
         "/api/v1/auth/login",
-        json={"email": verified_user.email, "password": "wrongpassword"},
+        json={"email": verified_user.email, "password": "wrongpassword", "org_id": str(verified_user.org_id)},
     )
     assert resp.status_code == 401
     assert resp.json()["detail"]["error"] == "invalid_credentials"
@@ -244,24 +242,31 @@ async def test_login_unverified_user_returns_401(client: AsyncClient, unverified
     """An unverified user receives 401 email_not_verified (unified to prevent oracle)."""
     resp = await client.post(
         "/api/v1/auth/login",
-        json={"email": unverified_user.email, "password": "correctpassword"},
+        json={"email": unverified_user.email, "password": "correctpassword", "org_id": str(unverified_user.org_id)},
     )
     assert resp.status_code == 401
     assert resp.json()["detail"]["error"] == "email_not_verified"
 
 
 @pytest.mark.asyncio
-async def test_login_unknown_email_returns_401(client: AsyncClient, org: Organisation):
-    """Email not in the database returns 401 (demo fallback disabled)."""
-    with patch("backend.api.routes.auth.settings") as mock_settings:
-        mock_settings.enable_demo_login = False
-        mock_settings.environment = "test"
-        mock_settings.secret_key = "testsecret"
-        resp = await client.post(
-            "/api/v1/auth/login",
-            json={"email": "nobody@example.com", "password": "somepassword"},
-        )
-    assert resp.status_code == 401
+async def test_login_unknown_email_returns_401(client: AsyncClient):
+    """Unknown email with no demo fallback should return 401."""
+    response = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "nobody@example.com", "password": "somepassword", "org_id": str(uuid.uuid4())},
+    )
+    assert response.status_code == 401
+    assert response.json()["detail"]["error"] == "invalid_credentials"
+
+
+@pytest.mark.asyncio
+async def test_login_requires_org_id(client: AsyncClient):
+    """Login without org_id returns 422 — field is required."""
+    response = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "test@example.com", "password": "password123"},
+    )
+    assert response.status_code == 422  # org_id required
 
 
 @pytest.mark.asyncio
@@ -273,7 +278,7 @@ async def test_login_jwt_contains_org_id(client: AsyncClient, verified_user: Use
 
     resp = await client.post(
         "/api/v1/auth/login",
-        json={"email": verified_user.email, "password": "correctpassword"},
+        json={"email": verified_user.email, "password": "correctpassword", "org_id": str(verified_user.org_id)},
     )
     assert resp.status_code == 200
     token = resp.json()["access_token"]

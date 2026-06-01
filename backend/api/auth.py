@@ -14,8 +14,12 @@ security = HTTPBearer(auto_error=False)
 
 
 class TokenPayload(BaseModel):
-    """JWT token payload structure."""
-    user_id: str
+    """JWT token payload structure.
+
+    Accepts both old tokens (user_id claim) and new tokens (sub claim) for
+    backward compatibility during the migration period.
+    """
+    user_id: str  # normalised from sub (new tokens) or user_id (legacy tokens)
     email: str
     org_id: Optional[str] = None
     role: str  # "admin" | "manager" | "member"
@@ -24,7 +28,7 @@ class TokenPayload(BaseModel):
 
 class User(BaseModel):
     """Authenticated user identity."""
-    user_id: str
+    user_id: str  # normalised from sub or user_id — consumers should use this field
     email: str
     org_id: Optional[str] = None
     role: str
@@ -77,8 +81,12 @@ def verify_token(token: str) -> TokenPayload:
     """
     try:
         payload = jwt.decode(token, settings.secret_key, algorithms=[settings.jwt_algorithm])
+        # Accept both new tokens ("sub") and legacy tokens ("user_id") for backward compat.
+        user_id = payload.get("sub") or payload.get("user_id")
+        if not user_id:
+            raise JWTError("Token missing both 'sub' and 'user_id' claims")
         return TokenPayload(
-            user_id=payload["user_id"],
+            user_id=user_id,
             email=payload["email"],
             org_id=payload.get("org_id"),
             role=payload.get("role", "member"),
