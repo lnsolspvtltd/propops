@@ -212,13 +212,12 @@ async def login(
         except Exception:
             password_ok = False
 
-        # Check verified AFTER bcrypt so both failure paths return 401 at the same latency
+        # Check verified AFTER bcrypt so both failure paths return 401 at the same latency.
+        # Return generic invalid_credentials — never expose "email exists but unverified"
+        # to unauthenticated callers (response-body oracle). Log internally for observability.
         if not db_user.email_verified:
             logger.warning("login: unverified email for user id=%s", db_user.id)
-            raise HTTPException(
-                status_code=401,
-                detail={"error": "email_not_verified", "message": "Verify your email before logging in"},
-            )
+            raise HTTPException(status_code=401, detail={"error": "invalid_credentials"})
 
         if not password_ok:
             logger.warning("login: wrong password for email=%s", email)
