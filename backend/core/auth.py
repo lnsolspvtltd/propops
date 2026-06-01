@@ -66,7 +66,8 @@ async def get_current_user(
             settings.secret_key,
             algorithms=[settings.jwt_algorithm]
         )
-        user_id: str = payload.get("sub")
+        # Accept both "sub" (new tokens) and "user_id" (legacy tokens) for backward compat
+        user_id: str = payload.get("sub") or payload.get("user_id")
         if not user_id:
             logger.warning("get_current_user: Token missing 'sub' claim")
             raise HTTPException(

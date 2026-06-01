@@ -28,7 +28,8 @@ from backend.models.user import User
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
-TOKEN_EXPIRE_HOURS = 24
+# Stable sentinel UUID for demo JWT "sub" claim — not a real user UUID
+_DEMO_SUB = "00000000-0000-0000-0000-000000000099"
 
 # bcrypt context — auto-handles future algorithm migrations
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -74,8 +75,14 @@ class RegisterResponse(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: str
+    email: EmailStr
     password: str
+    org_id: uuid.UUID
+
+    @field_validator("email")
+    @classmethod
+    def email_lowercase(cls, v: str) -> str:
+        return v.strip().lower()
 
 
 class LoginResponse(BaseModel):
@@ -98,9 +105,9 @@ def _make_token(user: User) -> str:
     - org_id — str(user.org_id)
     - role  — user.role
     - jti   — fresh UUID4 (allows future revocation)
-    - exp   — TOKEN_EXPIRE_HOURS from now
+    - exp   — jwt_access_token_expire_minutes from now
     """
-    expire = datetime.now(timezone.utc) + timedelta(hours=TOKEN_EXPIRE_HOURS)
+    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_access_token_expire_minutes)
     payload = {
         "sub": str(user.id),
         "email": user.email,
@@ -186,16 +193,26 @@ async def login(
     as a secondary path so existing development workflows keep working.
     Demo path only accepts the exact configured demo_email — not any email.
     """
-    email = req.email.strip().lower()
+    email = req.email  # already lowercased by LoginRequest.email_lowercase validator
 
     # ------------------------------------------------------------------
-    # Real user table lookup (primary path)
+    # Real user table lookup (primary path) — scoped by email AND org_id
+    # SECURITY: both columns required to prevent cross-tenant auth in multi-tenant DB
     # ------------------------------------------------------------------
-    user_result = await db.execute(select(User).where(User.email == email))
+    user_result = await db.execute(
+        select(User).where(User.email == email, User.org_id == req.org_id)
+    )
     db_user = user_result.scalar_one_or_none()
 
     if db_user is not None:
-        # Check email_verified before password to avoid 401 vs 403 timing oracle
+        # Always run bcrypt first — checking email_verified before verify() creates a
+        # timing oracle that leaks "email exists but unverified" to attackers.
+        try:
+            password_ok = pwd_context.verify(req.password, db_user.hashed_password)
+        except Exception:
+            password_ok = False
+
+        # Check verified AFTER bcrypt so both failure paths return 401 at the same latency
         if not db_user.email_verified:
             logger.warning("login: unverified email for user id=%s", db_user.id)
             raise HTTPException(
@@ -203,8 +220,7 @@ async def login(
                 detail={"error": "email_not_verified", "message": "Verify your email before logging in"},
             )
 
-        # Verify bcrypt hash — constant-time comparison handled by passlib
-        if not pwd_context.verify(req.password, db_user.hashed_password):
+        if not password_ok:
             logger.warning("login: wrong password for email=%s", email)
             raise HTTPException(status_code=401, detail={"error": "invalid_credentials"})
 
@@ -243,9 +259,9 @@ async def login(
         email_ok = secrets.compare_digest(email, settings.demo_email.strip().lower())
         pass_ok = secrets.compare_digest(req.password, settings.demo_password)
         if email_ok and pass_ok:
-            expire = datetime.now(timezone.utc) + timedelta(hours=TOKEN_EXPIRE_HOURS)
+            expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_access_token_expire_minutes)
             payload = {
-                "sub": settings.demo_email,
+                "sub": _DEMO_SUB,  # stable sentinel UUID — NOT a real user UUID
                 "email": settings.demo_email,
                 "org_id": str(settings.demo_org_id),
                 "role": "founder",  # not "admin" — demo role is "founder"

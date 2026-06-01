@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     # Demo login (development only)
     enable_demo_login: bool = False  # must be explicitly enabled; never on by default
     demo_email: str = "demo@propops.app"
-    demo_password: str = "demo"
+    demo_password: str = ""
     demo_org_id: str = ""  # required when enable_demo_login is True
 
     # Frontend
@@ -77,6 +77,16 @@ class Settings(BaseSettings):
         if environment == "development" and not v:
             logger.warning("secret_key is empty in development — set SECRET_KEY in .env")
         return v
+
+    @model_validator(mode="after")
+    def validate_demo_config(self) -> "Settings":
+        if self.enable_demo_login:
+            if not self.demo_password:
+                raise ValueError("enable_demo_login=True requires DEMO_PASSWORD to be set")
+            _weak = {"demo", "password", "admin", "test", "123456", "secret"}
+            if self.demo_password.lower() in _weak:
+                raise ValueError("DEMO_PASSWORD is too weak — set a strong value in .env")
+        return self
 
     @model_validator(mode="after")
     def validate_production_secrets(self) -> "Settings":
