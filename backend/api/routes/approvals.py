@@ -44,7 +44,7 @@ class PendingDraftsResponse(BaseModel):
 
 
 class ApproveRequest(BaseModel):
-    approved_by: str = "founder"
+    pass  # approved_by is derived from the JWT token — not client-controlled
 
 
 class RejectRequest(BaseModel):

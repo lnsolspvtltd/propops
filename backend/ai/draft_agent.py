@@ -6,9 +6,9 @@ SAFETY: NEVER confirms payment amounts, deposits, or financial figures.
 SAFETY: NEVER confirms a specific appointment time.
 Always be professional, empathetic, solution-focused.
 """
+import asyncio
 import logging
 import re
-import time
 from typing import Optional
 import anthropic
 from pydantic import BaseModel, ConfigDict
@@ -109,10 +109,11 @@ Write the briefing body only.""",
 class DraftResult(BaseModel):
     """Result of draft generation with safety validation."""
     model_config = ConfigDict(from_attributes=True)
-    
+
     success: bool
     subject: Optional[str] = None
     body: Optional[str] = None
+    draft_type: Optional[str] = None
     error: Optional[str] = None
     safety_issues: list[str] = []
 
@@ -226,7 +227,7 @@ Generate a professional draft response following the safety rules above. Output 
 
         except anthropic.RateLimitError:
             logger.warning("generate_draft: rate limited on attempt %d, backing off", attempt + 1)
-            time.sleep(2 ** attempt)
+            await asyncio.sleep(2 ** attempt)
         except Exception as e:
             logger.error("draft_agent: error attempt %d: %s", attempt + 1, e)
             if attempt == 2:
