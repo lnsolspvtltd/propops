@@ -239,13 +239,13 @@ async def test_login_wrong_password_returns_401(client: AsyncClient, verified_us
 
 @pytest.mark.asyncio
 async def test_login_unverified_user_returns_401(client: AsyncClient, unverified_user: User):
-    """An unverified user receives 401 email_not_verified (unified to prevent oracle)."""
+    """Unverified user returns generic 401 invalid_credentials — no response-body oracle."""
     resp = await client.post(
         "/api/v1/auth/login",
         json={"email": unverified_user.email, "password": "correctpassword", "org_id": str(unverified_user.org_id)},
     )
     assert resp.status_code == 401
-    assert resp.json()["detail"]["error"] == "email_not_verified"
+    assert resp.json()["detail"]["error"] == "invalid_credentials"
 
 
 @pytest.mark.asyncio
