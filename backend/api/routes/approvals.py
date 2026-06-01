@@ -186,7 +186,8 @@ async def approve_draft(
         raise HTTPException(status_code=400, detail={"error": f"Draft is already {draft.status}"})
 
     draft.status = "approved"
-    draft.approved_by = req.approved_by or user.get("email") or user.get("id", "founder")
+    # SECURITY: derive approved_by from JWT — never from client-supplied value
+    draft.approved_by = user.get("email") or user.get("id", "unknown")
     draft.approved_at = datetime.now(timezone.utc)
 
     try:

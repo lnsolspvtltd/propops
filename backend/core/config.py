@@ -87,11 +87,13 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_demo_config(self) -> "Settings":
         if self.demo_email:
+            _weak = {"demo", "password", "admin", "test", "123456", "secret"}
             if not self.demo_password:
-                if self.environment != "development":
-                    raise ValueError("enable_demo_login=True requires DEMO_PASSWORD to be set")
-            elif self.demo_password in ("demo", "password", "admin", "test", "123456"):
-                raise ValueError("DEMO_PASSWORD is too weak -- set a strong value in .env")
+                if self.environment == "production":
+                    raise ValueError("DEMO_PASSWORD must be set when DEMO_EMAIL is configured in production")
+                # In dev: allow empty — login endpoint returns 503, which is safe
+            elif self.demo_password.lower() in _weak:
+                raise ValueError("DEMO_PASSWORD is too weak — set a strong value in .env")
         return self
 
     @model_validator(mode="after")

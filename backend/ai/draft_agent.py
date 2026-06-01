@@ -8,6 +8,7 @@ Always be professional, empathetic, solution-focused.
 """
 import logging
 import re
+import time
 from typing import Optional
 import anthropic
 from pydantic import BaseModel, ConfigDict
@@ -188,43 +189,55 @@ Context:
 
 Generate a professional draft response following the safety rules above. Output ONLY the draft body text. No preamble, no closing, no explanations."""
     
-    try:
-        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        message = client.messages.create(
-            model="claude-3-5-sonnet-20241022",
-            max_tokens=1024,
-            system=system_prompt,
-            messages=[
-                {"role": "user", "content": user_prompt}
-            ]
-        )
-        
-        draft_body = message.content[0].text.strip()
-        
-        # SECURITY-REVIEW: Validate generated content against safety patterns
-        safety_issues = scan_for_safety_violations(draft_body)
-        
-        if safety_issues:
-            logger.warning(
-                f"Draft rejected due to safety violations for incident '{incident_title}' "
-                f"(recipient: {recipient_email}): {safety_issues}"
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+
+    for attempt in range(3):
+        try:
+            message = client.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=1024,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
             )
+
+            draft_body = message.content[0].text.strip()
+
+            # SECURITY-REVIEW: Validate generated content against safety patterns
+            safety_issues = scan_for_safety_violations(draft_body)
+            if safety_issues:
+                logger.warning(
+                    "Draft rejected due to safety violations for incident '%s' "
+                    "(recipient: %s): %s",
+                    incident_title, recipient_email, safety_issues,
+                )
+                return DraftResult(
+                    success=False,
+                    error="Draft rejected: contains unsafe content. Human review required.",
+                    safety_issues=safety_issues,
+                )
+
+            logger.info("generate_draft: success on attempt %d for '%s'", attempt + 1, incident_title)
             return DraftResult(
-                success=False,
-                error="Draft rejected: contains unsafe content. Human review required.",
-                safety_issues=safety_issues
+                success=True,
+                subject=f"Re: {incident_title}",
+                body=draft_body,
+                draft_type=draft_type,
             )
+
         except anthropic.RateLimitError:
+            logger.warning("generate_draft: rate limited on attempt %d, backing off", attempt + 1)
             time.sleep(2 ** attempt)
         except Exception as e:
-            logger.error(f"draft_agent: error attempt {attempt+1}: {e}")
+            logger.error("draft_agent: error attempt %d: %s", attempt + 1, e)
             if attempt == 2:
                 return DraftResult(
                     subject=f"Re: {incident_title}",
                     body="Thank you for reaching out. We have received your message and will respond shortly.",
                     draft_type=draft_type,
-                    success=False, error=str(e),
+                    success=False,
+                    error=str(e),
                 )
+
     return DraftResult(
         subject="", body="", draft_type=draft_type,
         success=False, error="Max retries exceeded",

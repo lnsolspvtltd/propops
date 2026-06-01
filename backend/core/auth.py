@@ -52,8 +52,9 @@ async def revoke_token_jti(
         _revoked_jti_cache.add(jti)
         return
     db.add(RevokedToken(jti=jti, expires_at=expires_at))
-    _revoked_jti_cache.add(jti)
     await db.commit()
+    # Add to cache only after successful DB commit — prevents false positives on commit failure
+    _revoked_jti_cache.add(jti)
 
 
 async def purge_expired_revocations(db: AsyncSession) -> None:
