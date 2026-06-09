@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
 from fastapi import Depends, HTTPException, Header
-from jwt import decode, DecodeError, ExpiredSignatureError
+from jose import jwt, JWTError, ExpiredSignatureError
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -68,7 +68,19 @@ async def get_current_user(
     authorization: Optional[str] = Header(None),
     db: AsyncSession = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Extract and validate current user from JWT token in Authorization header."""
+    """Extract and validate current user from JWT token in Authorization header.
+
+    Expected header format: Authorization: Bearer <token>
+
+    Args:
+        authorization: Authorization header value (injected by FastAPI)
+
+    Returns:
+        dict with user info (id, email, etc.)
+
+    Raises:
+        HTTPException 401: Missing, invalid, or expired token
+    """
     if not authorization:
         logger.warning("get_current_user: Missing Authorization header")
         raise HTTPException(
@@ -94,7 +106,8 @@ async def get_current_user(
     token = parts[1]
 
     try:
-        payload = decode(
+        # Verify and decode JWT
+        payload = jwt.decode(
             token,
             settings.secret_key,
             algorithms=[settings.jwt_algorithm],
@@ -108,7 +121,8 @@ async def get_current_user(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        user_id: str = payload.get("sub")
+        # Accept both "sub" (new tokens) and "user_id" (legacy tokens) for backward compat
+        user_id: str = payload.get("sub") or payload.get("user_id")
         if not user_id:
             logger.warning("get_current_user: Token missing 'sub' claim")
             raise HTTPException(
@@ -122,8 +136,8 @@ async def get_current_user(
         logger.debug("get_current_user: Valid token for user_id=%s", user_id)
         return {
             "id": user_id,
-            "email": payload.get("email") or user_id,
-            "role": payload.get("role", "user"),
+            "email": payload.get("email"),
+            "role": payload.get("role", "member"),
             "org_id": payload.get("org_id"),
         }
 
@@ -138,7 +152,7 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    except DecodeError as e:
+    except JWTError as e:
         logger.warning("get_current_user: Token decode error: %s", e)
         raise HTTPException(
             status_code=401,
@@ -153,7 +167,36 @@ async def get_current_user(
 
     except Exception as e:
         logger.error("get_current_user: Unexpected error: %s", e, exc_info=True)
+        raise HTTPException(status_code=401, detail={"error": "internal_error"})
+
+
+def assert_org(user: Dict[str, Any], requested_org_id) -> None:
+    """Raise 403 if the JWT org_id does not match requested_org_id.
+
+    Call this inside any route that scopes data to a single organisation to
+    prevent cross-tenant data leakage.
+
+    Args:
+        user: Dict returned by get_current_user dependency.
+        requested_org_id: The org UUID from the URL path or request body.
+
+    Raises:
+        HTTPException 403: when org_id in the token does not match or is absent.
+    """
+    jwt_org_id = user.get("org_id")
+    if not jwt_org_id:
+        logger.warning("assert_org: token has no org_id claim")
         raise HTTPException(
-            status_code=500,
-            detail="Internal error validating token",
+            status_code=403,
+            detail={"error": "org_mismatch", "message": "No org in token"},
+        )
+    if str(jwt_org_id) != str(requested_org_id):
+        logger.warning(
+            "assert_org: token org_id=%s does not match requested_org_id=%s",
+            jwt_org_id,
+            requested_org_id,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "org_mismatch"},
         )

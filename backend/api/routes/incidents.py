@@ -1,4 +1,4 @@
-"""Incidents API routes."""
+﻿"""Incidents API routes."""
 import uuid
 import logging
 from typing import Optional
@@ -19,14 +19,26 @@ from backend.api.auth import get_current_user, require_role, User
 
 logger = logging.getLogger(__name__)
 
-logger = logging.getLogger(__name__)
-
 router = APIRouter()
+
+
+def _get_user_org_id(user: User) -> uuid.UUID:
+    """Extract org_id from authenticated user, raising 403 if absent.
+
+    SECURITY: Forces all incident queries to be scoped to the caller's org.
+    """
+    if not user.org_id:
+        logger.warning("_get_user_org_id: user %s has no org_id in token", user.email)
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "org_mismatch", "message": "No org in token"},
+        )
+    return uuid.UUID(str(user.org_id))
 
 
 class IncidentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-    
+
     id: str
     title: str
     category: str
@@ -49,26 +61,36 @@ async def list_incidents(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List incidents with optional filtering. Requires authentication."""
-    logger.info(f"User {user.email} listing incidents (status={status}, urgency={urgency})")
-    
-    query = select(Incident).order_by(desc(Incident.created_at)).limit(limit)
+    """List incidents with optional filtering. Scoped to the caller's org.
+
+    SECURITY: org_id is sourced from the JWT -- never from client input.
+    """
+    # SECURITY: org_id sourced from JWT; never from client input
+    org_id = _get_user_org_id(user)
+    logger.info(f"User {user.email} listing incidents (org={org_id}, status={status}, urgency={urgency})")
+
+    query = (
+        select(Incident)
+        .where(Incident.org_id == org_id)
+        .order_by(desc(Incident.created_at))
+        .limit(limit)
+    )
     if status:
         query = query.where(Incident.status == status.upper())
     if urgency:
         query = query.where(Incident.urgency == urgency.upper())
-    
+
     result = await db.execute(query)
     incidents = result.scalars().all()
-    logger.info(f"Retrieved {len(incidents)} incidents (status={status}, urgency={urgency})")
+    logger.info(f"Retrieved {len(incidents)} incidents for org={org_id} (status={status}, urgency={urgency})")
 
     out = []
     for inc in incidents:
         draft_count_q = await db.execute(
             select(AIDraft).where(AIDraft.incident_id == inc.id, AIDraft.status == "PENDING_REVIEW")
         )
-        draft_count = len(draft_count_q.scalars().all())
-        
+        drafts = draft_count_q.scalars().all()
+
         out.append(IncidentResponse(
             id=str(inc.id),
             title=inc.title,
@@ -81,16 +103,30 @@ async def list_incidents(
             unit_id=str(inc.unit_id) if inc.unit_id else None,
             property_id=str(inc.property_id) if inc.property_id else None,
             created_at=inc.created_at.isoformat() if inc.created_at else "",
-            draft_count=len(draft_count_q.scalars().all()),
+            draft_count=len(drafts),
         ))
-    
+
     return out
 
 
 @router.get("/{incident_id}")
-async def get_incident(incident_id: str, db: AsyncSession = Depends(get_db)):
-    """Get a single incident with all drafts and context."""
-    result = await db.execute(select(Incident).where(Incident.id == uuid.UUID(incident_id)))
+async def get_incident(
+    incident_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a single incident with all drafts and context.
+
+    SECURITY: query is scoped to the caller's org_id to prevent cross-tenant IDOR.
+    """
+    # SECURITY: org_id sourced from JWT; scope lookup to prevent cross-tenant IDOR
+    org_id = _get_user_org_id(user)
+    result = await db.execute(
+        select(Incident).where(
+            Incident.id == uuid.UUID(incident_id),
+            Incident.org_id == org_id,
+        )
+    )
     inc = result.scalar_one_or_none()
     if not inc:
         raise HTTPException(status_code=404, detail="Incident not found")
