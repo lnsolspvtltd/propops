@@ -57,6 +57,12 @@ async def revoke_token_jti(
     _revoked_jti_cache.add(jti)
 
 
+def assert_org(user: dict, requested_org_id) -> None:
+    """Raise 403 if the JWT org_id does not match the requested org_id."""
+    if str(user.get("org_id", "")) != str(requested_org_id):
+        raise HTTPException(403, {"error": "org_mismatch", "message": "Access denied"})
+
+
 async def purge_expired_revocations(db: AsyncSession) -> None:
     """Remove expired entries from the blocklist (best-effort housekeeping)."""
     now = datetime.now(timezone.utc)

@@ -1,12 +1,7 @@
 /**
- * Authenticated fetch wrapper.
+ * Authenticated fetch wrapper and auth API helpers.
  * Reads token from localStorage, adds Authorization header.
  * Redirects to /login on 401.
- *
- * SECURITY NOTE: Tokens are stored in localStorage for the demo/beta UI.
- * This is vulnerable to XSS — any script on the page can read the token.
- * Production hardening should move to httpOnly Secure SameSite cookies set by
- * the backend login endpoint. Until then, keep CSP strict and avoid inline scripts.
  */
 function resolveApiBase(): string {
   const url = process.env.NEXT_PUBLIC_API_URL;
@@ -31,7 +26,7 @@ export function clearToken(): void {
   localStorage.removeItem("propops_user");
 }
 
-export function getUser(): { email: string; name: string } | null {
+export function getUser(): { email: string; name?: string; org_id?: string; role?: string } | null {
   if (typeof window === "undefined") return null;
   const raw = localStorage.getItem("propops_user");
   if (!raw) return null;
@@ -58,4 +53,70 @@ export async function apiFetch(path: string, options: RequestInit = {}): Promise
     throw err;
   }
   return res;
+}
+
+// ---------------------------------------------------------------------------
+// Auth API helpers
+// ---------------------------------------------------------------------------
+
+async function authPost(path: string, body: object): Promise<{ ok: boolean; status: number; data: unknown }> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Accept": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, data };
+}
+
+function extractError(data: unknown): string {
+  if (data && typeof data === "object") {
+    const d = data as Record<string, unknown>;
+    if (d.detail && typeof d.detail === "object") {
+      const detail = d.detail as Record<string, unknown>;
+      return String(detail.message ?? detail.error ?? "Unknown error");
+    }
+    return String(d.message ?? d.error ?? d.detail ?? "Unknown error");
+  }
+  return "Unknown error";
+}
+
+export async function login(
+  email: string,
+  password: string,
+  orgId: string,
+): Promise<{ access_token: string; user: Record<string, string> }> {
+  const { ok, data } = await authPost("/api/v1/auth/login", { email, password, org_id: orgId });
+  if (!ok) throw new Error(extractError(data));
+  return data as { access_token: string; user: Record<string, string> };
+}
+
+export async function register(
+  email: string,
+  password: string,
+  orgId: string,
+): Promise<{ id: string; email: string; org_id: string; role: string }> {
+  const { ok, data } = await authPost("/api/v1/auth/register", { email, password, org_id: orgId });
+  if (!ok) throw new Error(extractError(data));
+  return data as { id: string; email: string; org_id: string; role: string };
+}
+
+export async function verifyEmail(token: string): Promise<void> {
+  const { ok, data } = await authPost("/api/v1/auth/verify-email", { token });
+  if (!ok) throw new Error(extractError(data));
+}
+
+export async function resendVerification(email: string, orgId: string): Promise<void> {
+  await authPost("/api/v1/auth/resend-verification", { email, org_id: orgId });
+  // Always 202 — no error thrown
+}
+
+export async function forgotPassword(email: string, orgId: string): Promise<void> {
+  await authPost("/api/v1/auth/forgot-password", { email, org_id: orgId });
+  // Always 202 — no error thrown
+}
+
+export async function resetPassword(token: string, newPassword: string): Promise<void> {
+  const { ok, data } = await authPost("/api/v1/auth/reset-password", { token, new_password: newPassword });
+  if (!ok) throw new Error(extractError(data));
 }

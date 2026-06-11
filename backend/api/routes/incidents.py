@@ -1,13 +1,14 @@
 """Incidents API routes."""
 import uuid
 import logging
-from typing import Optional
+from typing import Any, Optional
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from pydantic import BaseModel, ConfigDict
 from backend.core.database import get_db
+from backend.core.auth import get_current_user
 from backend.models.incident import Incident, AIDraft
 from backend.services.incident_state_service import (
     transition_incident_status,
@@ -15,9 +16,6 @@ from backend.services.incident_state_service import (
     StateTransitionError,
 )
 from backend.core.state_machine import get_valid_transitions, IncidentStatus, validate_transition
-from backend.api.auth import get_current_user, require_role, User
-
-logger = logging.getLogger(__name__)
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +24,7 @@ router = APIRouter()
 
 class IncidentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-    
+
     id: str
     title: str
     category: str
@@ -46,29 +44,33 @@ async def list_incidents(
     status: Optional[str] = Query(None),
     urgency: Optional[str] = Query(None),
     limit: int = Query(50, le=200),
-    user: User = Depends(get_current_user),
+    user: dict[str, Any] = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List incidents with optional filtering. Requires authentication."""
-    logger.info(f"User {user.email} listing incidents (status={status}, urgency={urgency})")
-    
-    query = select(Incident).order_by(desc(Incident.created_at)).limit(limit)
+    """List incidents for the authenticated user's org."""
+    org_id = uuid.UUID(user["org_id"])
+    logger.info("User %s listing incidents (status=%s, urgency=%s)", user.get("email"), status, urgency)
+
+    query = (
+        select(Incident)
+        .where(Incident.org_id == org_id)
+        .order_by(desc(Incident.created_at))
+        .limit(limit)
+    )
     if status:
         query = query.where(Incident.status == status.upper())
     if urgency:
         query = query.where(Incident.urgency == urgency.upper())
-    
+
     result = await db.execute(query)
     incidents = result.scalars().all()
-    logger.info(f"Retrieved {len(incidents)} incidents (status={status}, urgency={urgency})")
 
     out = []
     for inc in incidents:
         draft_count_q = await db.execute(
             select(AIDraft).where(AIDraft.incident_id == inc.id, AIDraft.status == "PENDING_REVIEW")
         )
-        draft_count = len(draft_count_q.scalars().all())
-        
+        pending_drafts = draft_count_q.scalars().all()
         out.append(IncidentResponse(
             id=str(inc.id),
             title=inc.title,
@@ -81,19 +83,26 @@ async def list_incidents(
             unit_id=str(inc.unit_id) if inc.unit_id else None,
             property_id=str(inc.property_id) if inc.property_id else None,
             created_at=inc.created_at.isoformat() if inc.created_at else "",
-            draft_count=len(draft_count_q.scalars().all()),
+            draft_count=len(pending_drafts),
         ))
-    
+
     return out
 
 
 @router.get("/{incident_id}")
-async def get_incident(incident_id: str, db: AsyncSession = Depends(get_db)):
-    """Get a single incident with all drafts and context."""
+async def get_incident(
+    incident_id: str,
+    user: dict[str, Any] = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a single incident with all drafts. Enforces org ownership."""
+    org_id = uuid.UUID(user["org_id"])
     result = await db.execute(select(Incident).where(Incident.id == uuid.UUID(incident_id)))
     inc = result.scalar_one_or_none()
     if not inc:
         raise HTTPException(status_code=404, detail="Incident not found")
+    if str(inc.org_id) != str(org_id):
+        raise HTTPException(status_code=403, detail={"error": "org_mismatch"})
     drafts_q = await db.execute(select(AIDraft).where(AIDraft.incident_id == inc.id))
     drafts = [{"id": str(d.id), "subject": d.subject, "body": d.body, "status": d.status}
               for d in drafts_q.scalars().all()]

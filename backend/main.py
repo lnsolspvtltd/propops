@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.routes import approvals, health, inbox, incidents
 from backend.api.routes import dashboard, tenants, units, vendors, onboarding
-from backend.api.routes import incidents_assign, auth, demo
+from backend.api.routes import incidents_assign, auth, demo, onboarding_settings, invites
 from backend.core.config import get_settings, validate_startup_settings
 from backend.core.database import init_db
 from backend.services.inbox_poller import start_inbox_poller, stop_inbox_poller
@@ -82,7 +82,11 @@ app.include_router(tenants.router, prefix="/api/v1")
 app.include_router(units.router, prefix="/api/v1")
 app.include_router(vendors.router, prefix="/api/v1")
 app.include_router(onboarding.router, prefix="/api/v1")
+app.include_router(onboarding_settings.router, prefix="/api/v1")
 app.include_router(incidents_assign.router, prefix="/api/v1")
+
+# Phase 4 routes
+app.include_router(invites.router, prefix="/api/v1")
 
 
 @app.get("/")

@@ -1,15 +1,15 @@
 """Add revoked_tokens table for JWT jti blocklist.
 
-Revision ID: 004
-Revises: 003
+Revision ID: 004_revoked
+Revises: 004 (merge head)
 
 Note: partial index below is PostgreSQL-specific (PropOps production DB).
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "004"
-down_revision = "003"
+revision = "004_revoked"
+down_revision = "004"
 branch_labels = None
 depends_on = None
 

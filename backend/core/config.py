@@ -53,10 +53,14 @@ class Settings(BaseSettings):
     # Encryption (org credentials)
     fernet_key: str = ""
 
-    # Demo login (development) â€” empty default forces explicit .env in non-trivial deploys
-    demo_email: str = "demo@propops.app"
-    demo_password: str = ""
-    demo_org_id: str = "00000000-0000-0000-0000-000000000001"
+    # Demo login (development) — empty default forces explicit .env in non-trivial deploys
+    demo_email: str = “demo@propops.app”
+    demo_password: str = “”
+    demo_org_id: str = “00000000-0000-0000-0000-000000000001”
+    enable_demo_login: bool = True
+
+    # Frontend URL for building links in transactional emails
+    frontend_url: str = “http://localhost:3000”
 
     # Optional integrations
     twilio_account_sid: str = ""
@@ -116,3 +120,17 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
+
+
+def validate_startup_settings() -> None:
+    """Raise SystemExit if critical settings are missing for the current environment."""
+    s = get_settings()
+    if s.environment == "production":
+        missing = []
+        if not s.secret_key:
+            missing.append("SECRET_KEY")
+        if not s.anthropic_api_key:
+            missing.append("ANTHROPIC_API_KEY")
+        if missing:
+            logger.critical("Missing required production settings: %s", ", ".join(missing))
+            raise SystemExit(1)

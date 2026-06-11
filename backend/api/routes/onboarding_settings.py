@@ -1,13 +1,15 @@
-"""Organisation settings update endpoint (Phase 3 addition)."""
+"""Organisation settings update endpoint (Phase 3)."""
 import logging
-import uuid
 import imaplib
+import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.core.auth import get_current_user
 from backend.core.database import get_db
 from backend.core.encryption import encrypt
 from backend.models.organisation import Organisation
@@ -20,7 +22,7 @@ class SettingsUpdate(BaseModel):
     imap_host: str | None = None
     imap_port: int | None = None
     imap_username: str | None = None
-    imap_password: str | None = None   # plaintext — encrypted before storage
+    imap_password: str | None = None
     smtp_host: str | None = None
     smtp_port: int | None = None
     smtp_username: str | None = None
@@ -47,15 +49,15 @@ def _check_imap(host: str, port: int, username: str, password: str) -> tuple[boo
 
 @router.put("/settings", response_model=OrganisationResponse)
 async def update_settings(
-    org_id: str,
     body: SettingsUpdate,
+    user: dict[str, Any] = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> OrganisationResponse:
-    """Partial update of org IMAP/SMTP settings. Re-tests IMAP if credentials changed."""
+    """Partial update of org IMAP/SMTP settings. Org derived from JWT (IDOR-safe)."""
     try:
-        oid = uuid.UUID(org_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail={"error": "Invalid org_id"})
+        oid = uuid.UUID(user["org_id"])
+    except (ValueError, KeyError):
+        raise HTTPException(status_code=401, detail={"error": "invalid_token"})
 
     res = await db.execute(select(Organisation).where(Organisation.id == oid))
     org = res.scalar_one_or_none()
@@ -66,25 +68,38 @@ async def update_settings(
     if creds_changed:
         host = body.imap_host or org.imap_host or ""
         port = body.imap_port or org.imap_port or 993
-        user = body.imap_username or org.imap_username or ""
+        imap_user = body.imap_username or org.imap_username or ""
         pwd = body.imap_password or ""
         if pwd:
-            ok, err = _check_imap(host, port, user, pwd)
+            ok, err = _check_imap(host, port, imap_user, pwd)
             if not ok:
                 raise HTTPException(status_code=400, detail={"error": f"IMAP test failed: {err}"})
 
-    if body.imap_host is not None: org.imap_host = body.imap_host
-    if body.imap_port is not None: org.imap_port = body.imap_port
-    if body.imap_username is not None: org.imap_username = body.imap_username
-    if body.imap_password: org.imap_password_enc = encrypt(body.imap_password)
-    if body.smtp_host is not None: org.smtp_host = body.smtp_host
-    if body.smtp_port is not None: org.smtp_port = body.smtp_port
-    if body.smtp_username is not None: org.smtp_username = body.smtp_username
-    if body.smtp_password: org.smtp_password_enc = encrypt(body.smtp_password)
-    if body.polling_active is not None: org.polling_active = body.polling_active
+    if body.imap_host is not None:
+        org.imap_host = body.imap_host
+    if body.imap_port is not None:
+        org.imap_port = body.imap_port
+    if body.imap_username is not None:
+        org.imap_username = body.imap_username
+    if body.imap_password:
+        org.imap_password_enc = encrypt(body.imap_password)
+    if body.smtp_host is not None:
+        org.smtp_host = body.smtp_host
+    if body.smtp_port is not None:
+        org.smtp_port = body.smtp_port
+    if body.smtp_username is not None:
+        org.smtp_username = body.smtp_username
+    if body.smtp_password:
+        org.smtp_password_enc = encrypt(body.smtp_password)
+    if body.polling_active is not None:
+        org.polling_active = body.polling_active
 
     await db.commit()
     await db.refresh(org)
 
-    return OrganisationResponse(org_id=str(org.id), name=org.name,
-                                polling_active=org.polling_active, imap_connected=True)
+    return OrganisationResponse(
+        org_id=str(org.id),
+        name=org.name,
+        polling_active=org.polling_active,
+        imap_connected=True,
+    )
