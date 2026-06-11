@@ -11,14 +11,24 @@ import logging
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from backend.core.config import settings
+from backend.models.base import Base
+import backend.models.revoked_token  # noqa: F401 — register RevokedToken metadata
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["Base", "engine", "AsyncSessionLocal", "get_db", "init_db"]
+
+# SQL echo routed through dedicated logger — avoids PII leaking to stdout in prod
+_db_logger = logging.getLogger("sqlalchemy.engine")
+if settings.environment == "development":
+    _db_logger.setLevel(logging.DEBUG)
 
 # Create async engine with connection pooling
 # Pool settings are tunable via environment variables (see config.py)
 engine = create_async_engine(
     settings.database_url,
-    echo=settings.environment == "development",  # SQL logging only in dev; disable for prod
+    echo=settings.environment == "development",
+    echo_pool=False,
     pool_size=settings.database_pool_size,
     max_overflow=settings.database_max_overflow,
     pool_pre_ping=True,  # Verify connections before use
@@ -56,7 +66,29 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         try:
             yield session
-            await session.commit()
-        except Exception as e:
+            if session.new or session.dirty or session.deleted:
+                await session.commit()
+        except Exception:
             await session.rollback()
             raise
+
+
+async def init_db() -> None:
+    """Verify database connectivity at startup.
+
+    Schema changes are applied exclusively via Alembic migrations —
+    never call metadata.create_all() here.
+    """
+    from sqlalchemy import text
+
+    async with AsyncSessionLocal() as session:
+        await session.execute(text("SELECT 1"))
+        try:
+            from backend.core.auth import purge_expired_revocations
+
+            await purge_expired_revocations(session)
+        except Exception as e:
+            logger.warning("Revoked-token purge skipped (table may not exist yet): %s", e)
+            await session.rollback()
+    logger.info("Database connectivity verified (Alembic owns schema migrations)")
+

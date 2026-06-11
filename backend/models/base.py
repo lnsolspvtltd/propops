@@ -13,4 +13,3 @@ class Base(DeclarativeBase):
             id: Mapped[str] = mapped_column(primary_key=True)
     """
     pass
----

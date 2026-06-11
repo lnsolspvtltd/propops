@@ -1,8 +1,8 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { AlertCircle, RefreshCw, Mail, Clock, CheckCircle2, XCircle } from "lucide-react";
-
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+import DemoPanel, { type SimulateResult } from "@/components/DemoPanel";
+import { apiFetch } from "@/lib/api";
 
 interface PendingDraft {
   draft_id: string;
@@ -49,12 +49,12 @@ export default function ApprovalQueue() {
     abortRef.current?.abort();
     abortRef.current = new AbortController();
     try {
-      const res = await fetch(`${API}/api/v1/approvals/pending`, {
+      const res = await apiFetch("/api/v1/approvals/pending?limit=100&offset=0", {
         signal: abortRef.current.signal,
-        headers: { Accept: 'application/json' },
       });
       if (!res.ok) throw new Error(`Server error ${res.status}`);
-      const data: PendingDraft[] = await res.json();
+      const payload = await res.json();
+      const data: PendingDraft[] = Array.isArray(payload) ? payload : payload.drafts ?? [];
       const sorted = [...data].sort((a, b) => {
         const order = { EMERGENCY: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
         return (order[a.urgency] ?? 9) - (order[b.urgency] ?? 9);
@@ -88,15 +88,38 @@ export default function ApprovalQueue() {
     setTimeout(() => setToast(null), 3000);
   }
 
+  async function handleSimulatedDraft(result: SimulateResult) {
+    abortRef.current?.abort();
+    try {
+      const res = await apiFetch("/api/v1/approvals/pending");
+      if (!res.ok) throw new Error(`Server error ${res.status}`);
+      const data: PendingDraft[] = await res.json();
+      const sorted = [...data].sort((a, b) => {
+        const order = { EMERGENCY: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+        return (order[a.urgency] ?? 9) - (order[b.urgency] ?? 9);
+      });
+      setDrafts(sorted);
+      const match =
+        sorted.find((d) => d.draft_id === result.draft_id) ?? sorted[0] ?? null;
+      if (match) {
+        setSelected(match);
+        setActiveTab("original");
+      }
+      const secs = (result.processing_time_ms / 1000).toFixed(1);
+      showToast(`✓ New ${result.urgency} draft ready — triaged in ${secs}s`, true);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Failed to refresh queue", false);
+    }
+  }
+
   async function handleApprove(draftId: string) {
     setActionLoading(draftId);
     const prev = drafts;
     setDrafts((d) => d.filter((x) => x.draft_id !== draftId));
     setSelected(null);
     try {
-      const res = await fetch(`${API}/api/v1/approvals/${draftId}/approve`, {
+      const res = await apiFetch(`/api/v1/approvals/${draftId}/approve`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ approved_by: "founder" }),
       });
       if (!res.ok) throw new Error(`Failed: ${res.status}`);
@@ -116,9 +139,8 @@ export default function ApprovalQueue() {
     setDrafts((d) => d.filter((x) => x.draft_id !== draftId));
     setSelected(null);
     try {
-      const res = await fetch(`${API}/api/v1/approvals/${draftId}/reject`, {
+      const res = await apiFetch(`/api/v1/approvals/${draftId}/reject`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reason: "rejected by property manager" }),
       });
       if (!res.ok) throw new Error(`Failed: ${res.status}`);
@@ -167,6 +189,8 @@ export default function ApprovalQueue() {
             </div>
           )}
         </div>
+
+        <DemoPanel onNewDraft={handleSimulatedDraft} />
 
         <div className="flex-1 overflow-y-auto">
           {loading ? (

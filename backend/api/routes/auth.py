@@ -1,77 +1,20 @@
-"""Authentication routes — register, login, and token management.
-
-Real user auth backed by the `users` table.  bcrypt password hashing via
-passlib.  JWT tokens include sub, email, org_id, role, and jti claims.
-
-Demo-credential fallback is gated by settings.enable_demo_login and is
-disabled automatically in production regardless of that flag.
-"""
+"""Authentication routes — login + token management."""
 import logging
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
-from jose import jwt
-from passlib.context import CryptContext
-from pydantic import BaseModel, EmailStr, field_validator
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from fastapi import APIRouter, Depends, HTTPException, Header
+from jose import jwt, JWTError
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.config import settings
+from backend.core.auth import revoke_token_jti
 from backend.core.database import get_db
-from backend.models.organisation import Organisation
-from backend.models.user import User
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
-
-# Stable sentinel UUID for demo JWT "sub" claim — not a real user UUID
-_DEMO_SUB = "00000000-0000-0000-0000-000000000099"
-
-# bcrypt context — auto-handles future algorithm migrations
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-# Pre-computed bcrypt hash at cost 12 — used for constant-time dummy verification
-# to prevent email enumeration via response time. The plaintext is irrelevant.
-_DUMMY_HASH = "$2b$12$eixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW"
-
-
-# ---------------------------------------------------------------------------
-# Pydantic schemas
-# ---------------------------------------------------------------------------
-
-
-class RegisterRequest(BaseModel):
-    """Payload for POST /register."""
-
-    email: EmailStr  # validates RFC 5322 format
-    password: str
-    org_id: uuid.UUID
-    role: Literal["member", "manager"] = "member"  # admin only via invite/migration
-
-    @field_validator("password")
-    @classmethod
-    def password_min_length(cls, v: str) -> str:
-        if len(v) < 8:
-            raise ValueError("password must be at least 8 characters")
-        return v
-
-    @field_validator("email")
-    @classmethod
-    def email_lowercase(cls, v: str) -> str:
-        return v.strip().lower()
-
-
-class RegisterResponse(BaseModel):
-    """Registration success — never includes the password."""
-
-    id: uuid.UUID
-    email: str
-    org_id: uuid.UUID
-    role: str
 
 
 class LoginRequest(BaseModel):
@@ -95,50 +38,52 @@ class LoginResponse(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
-
-def _make_token(user: User) -> str:
-    """Build a signed JWT for *user*.
-
-    Claims:
-    - sub   — str(user.id)
-    - email — user.email
-    - org_id — str(user.org_id)
-    - role  — user.role
-    - jti   — fresh UUID4 (allows future revocation)
-    - exp   — jwt_access_token_expire_minutes from now
+    Demo mode: accepts demo credentials only in development/test environments.
+    In production, swap this for a real user table lookup.
     """
-    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_access_token_expire_minutes)
+    if not settings.demo_email or not settings.demo_password:
+        logger.error("Missing demo credentials — set DEMO_EMAIL and DEMO_PASSWORD in .env")
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "Demo login not configured"},
+        )
+
+    email = req.email.strip().lower()
+
+    if settings.environment == "production":
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "Demo login disabled in production"},
+        )
+
+    password_ok = secrets.compare_digest(req.password, settings.demo_password)
+    email_ok = email == settings.demo_email.strip().lower()
+    if not (email_ok and password_ok):
+        raise HTTPException(status_code=401, detail={"error": "Invalid credentials"})
+
+    expire = datetime.now(timezone.utc) + timedelta(
+        minutes=settings.jwt_access_token_expire_minutes
+    )
     payload = {
-        "sub": str(user.id),
-        "email": user.email,
-        "org_id": str(user.org_id),
-        "role": user.role,
-        "jti": str(uuid.uuid4()),
+        "sub": email,
+        "email": email,
         "exp": expire,
+        "name": email.split("@")[0].title(),
+        "jti": str(uuid.uuid4()),
+        "org_id": settings.demo_org_id,
+        "role": "founder",
     }
-    return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
+    token = jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
 
-
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
-
-@router.post("/register", response_model=RegisterResponse, status_code=201)
-async def register(
-    req: RegisterRequest,
-    db: AsyncSession = Depends(get_db),
-) -> RegisterResponse:
-    """Create a new user account.
-
-    Checks:
-    - org_id must reference an existing Organisation (404 otherwise)
-    - email must be unique within the org (409 otherwise)
-    - password is hashed with bcrypt before persistence
-    """
-    # 1. Verify org exists
-    org_result = await db.execute(
-        select(Organisation).where(Organisation.id == req.org_id)
+    logger.info("Login: %s", email)
+    return LoginResponse(
+        access_token=token,
+        user={
+            "email": email,
+            "name": email.split("@")[0].title(),
+            "org_id": settings.demo_org_id,
+            "role": "founder",
+        },
     )
     org = org_result.scalar_one_or_none()
     if org is None:
@@ -285,6 +230,28 @@ async def login(
 
 
 @router.post("/logout")
-async def logout() -> dict:
-    """Client must discard the token. Server is stateless for now."""
+async def logout(
+    authorization: str | None = Header(None),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Revoke the current token's JTI server-side, then client discards it."""
+    if authorization:
+        parts = authorization.split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            try:
+                payload = jwt.decode(
+                    parts[1],
+                    settings.secret_key,
+                    algorithms=[settings.jwt_algorithm],
+                    options={"verify_exp": False},
+                )
+                jti = payload.get("jti")
+                exp = payload.get("exp")
+                expires_at = (
+                    datetime.fromtimestamp(exp, tz=timezone.utc) if exp else None
+                )
+                if jti:
+                    await revoke_token_jti(jti, db, expires_at=expires_at)
+            except JWTError:
+                logger.warning("Logout: could not decode token for revocation")
     return {"status": "logged_out"}

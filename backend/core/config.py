@@ -1,4 +1,4 @@
-"""Application configuration from environment variables."""
+﻿"""Application configuration from environment variables."""
 import logging
 from functools import lru_cache
 
@@ -53,14 +53,10 @@ class Settings(BaseSettings):
     # Encryption (org credentials)
     fernet_key: str = ""
 
-    # Demo login (development only)
-    enable_demo_login: bool = False  # must be explicitly enabled; never on by default
+    # Demo login (development) â€” empty default forces explicit .env in non-trivial deploys
     demo_email: str = "demo@propops.app"
     demo_password: str = ""
-    demo_org_id: str = ""  # required when enable_demo_login is True
-
-    # Frontend
-    frontend_url: str = "http://localhost:3000"
+    demo_org_id: str = "00000000-0000-0000-0000-000000000001"
 
     # Optional integrations
     twilio_account_sid: str = ""
@@ -75,16 +71,28 @@ class Settings(BaseSettings):
         if environment == "production" and not v:
             raise ValueError("SECRET_KEY must be set in production")
         if environment == "development" and not v:
-            logger.warning("secret_key is empty in development — set SECRET_KEY in .env")
+            logger.warning("secret_key is empty in development â€” set SECRET_KEY in .env")
+        return v
+
+    @field_validator("demo_password", mode="after")
+    @classmethod
+    def warn_empty_demo_password(cls, v: str, info) -> str:
+        environment = info.data.get("environment", "development")
+        if environment == "development" and not v:
+            logger.warning(
+                "demo_password is empty â€” set DEMO_PASSWORD in .env or login will return 503"
+            )
         return v
 
     @model_validator(mode="after")
     def validate_demo_config(self) -> "Settings":
-        if self.enable_demo_login:
-            if not self.demo_password:
-                raise ValueError("enable_demo_login=True requires DEMO_PASSWORD to be set")
+        if self.demo_email:
             _weak = {"demo", "password", "admin", "test", "123456", "secret"}
-            if self.demo_password.lower() in _weak:
+            if not self.demo_password:
+                if self.environment == "production":
+                    raise ValueError("DEMO_PASSWORD must be set when DEMO_EMAIL is configured in production")
+                # In dev: allow empty — login endpoint returns 503, which is safe
+            elif self.demo_password.lower() in _weak:
                 raise ValueError("DEMO_PASSWORD is too weak — set a strong value in .env")
         return self
 

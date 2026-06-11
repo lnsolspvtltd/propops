@@ -3,27 +3,31 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime, timezone
 from uuid import uuid4
-from httpx import AsyncClient
-from fastapi import FastAPI
-from sqlalchemy.ext.asyncio import AsyncSession
+from httpx import ASGITransport, AsyncClient
+from fastapi import FastAPI, HTTPException
 
-from backend.api.routes.approvals import router, ApproveRequest
+from backend.api.routes import approvals as approvals_module
+from backend.api.routes.approvals import router
+from backend.core.auth import get_current_user
+from backend.core.database import get_db
 from backend.models.incident import AIDraft, Incident
 
 
 @pytest.fixture
-def mock_db():
-    """Mock async database session."""
-    db = AsyncMock(spec=AsyncSession)
-    return db
+def mock_incident():
+    """Mock Incident for org-scoped approval tests."""
+    incident = MagicMock(spec=Incident)
+    incident.org_id = uuid4()
+    incident.title = "Test incident"
+    return incident
 
 
 @pytest.fixture
-def mock_draft():
+def mock_draft(mock_incident):
     """Mock AIDraft instance."""
     draft = MagicMock(spec=AIDraft)
     draft.id = uuid4()
-    draft.incident_id = uuid4()
+    draft.incident_id = mock_incident.id if hasattr(mock_incident, "id") else uuid4()
     draft.subject = "Test Subject"
     draft.body = "Test Body"
     draft.status = "pending"
@@ -34,65 +38,110 @@ def mock_draft():
     return draft
 
 
+@pytest.fixture
+def mock_db():
+    """Mock async database session."""
+    return AsyncMock()
+
+
+@pytest.fixture
+def app_with_router(mock_db):
+    app = FastAPI()
+    app.include_router(router)
+
+    async def _override_user():
+        return {
+            "id": "founder",
+            "email": "founder@example.com",
+            "role": "founder",
+            "org_id": "00000000-0000-0000-0000-000000000001",
+        }
+
+    async def _override_db():
+        yield mock_db
+
+    app.dependency_overrides[get_current_user] = _override_user
+    app.dependency_overrides[get_db] = _override_db
+    yield app
+    app.dependency_overrides.clear()
+
+
 @pytest.mark.asyncio
-async def test_approve_draft_success(mock_db, mock_draft):
+async def test_approve_draft_success(mock_draft, mock_incident, app_with_router, mock_db):
     """Test successful draft approval with authenticated user."""
+    mock_incident.org_id = uuid4()
     draft_id = str(mock_draft.id)
-    
-    mock_result = AsyncMock()
-    mock_result.scalar_one_or_none.return_value = mock_draft
-    mock_db.execute.return_value = mock_result
-    
-    with patch("backend.api.routes.approvals.get_current_user") as mock_auth:
-        mock_auth.return_value = "founder@example.com"
-        
-        with patch("backend.api.routes.approvals.get_db") as mock_get_db:
-            mock_get_db.return_value = mock_db
-            
-            app = FastAPI()
-            app.include_router(router)
-            
-            from httpx import AsyncClient, ASGITransport
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                response = await client.post(
-                    f"/api/v1/approvals/{draft_id}/approve",
-                    json={},
-                    headers={"Authorization": "Bearer valid-token"}
-                )
-    
-    # Note: Full integration test would require proper app setup
-    # This test verifies the endpoint signature and parameter handling
+
+    mock_result = MagicMock()
+    mock_result.one_or_none.return_value = (mock_draft, mock_incident)
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    with patch("backend.api.routes.approvals.send_approved_draft"):
+        async with AsyncClient(
+            transport=ASGITransport(app=app_with_router), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/api/v1/approvals/{draft_id}/approve",
+                json={"approved_by": "founder"},
+                headers={"Authorization": "Bearer valid-token"},
+            )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "approved"
+    assert mock_draft.status == "approved"
 
 
 @pytest.mark.asyncio
-async def test_approve_draft_invalid_format(mock_db):
-    """Test approval with malformed draft_id."""
-    with patch("backend.api.routes.approvals.get_current_user") as mock_auth:
-        mock_auth.return_value = "founder@example.com"
-        
-        # Invalid UUID format should raise 422
-        invalid_id = "not-a-uuid"
-        # HTTPException(422) would be raised in actual endpoint
+async def test_approve_draft_invalid_format(app_with_router):
+    """Test approval with malformed draft_id returns 422."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_router), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/v1/approvals/not-a-uuid/approve",
+            json={},
+            headers={"Authorization": "Bearer valid-token"},
+        )
+
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_approve_draft_not_found(mock_db):
-    """Test approval when draft doesn't exist."""
-    mock_result = AsyncMock()
-    mock_result.scalar_one_or_none.return_value = None
-    mock_db.execute.return_value = mock_result
-    
-    with patch("backend.api.routes.approvals.get_current_user") as mock_auth:
-        mock_auth.return_value = "founder@example.com"
-        
-        # HTTPException(404) would be raised in actual endpoint
+async def test_approve_draft_not_found(app_with_router, mock_db):
+    """Test approval when draft doesn't exist returns 404."""
+    mock_result = MagicMock()
+    mock_result.one_or_none.return_value = None
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_router), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/v1/approvals/{uuid4()}/approve",
+            json={},
+            headers={"Authorization": "Bearer valid-token"},
+        )
+
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio
-async def test_approve_draft_auth_required(mock_db):
+async def test_approve_draft_auth_required():
     """Test that approval requires authentication."""
-    with patch("backend.api.routes.approvals.get_current_user") as mock_auth:
-        mock_auth.side_effect = Exception("Not authenticated")
-        
-        # HTTPException(401) would be raised in actual endpoint
----
+    app = FastAPI()
+    app.include_router(router)
+
+    async def _raise_auth():
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    app.dependency_overrides[get_current_user] = _raise_auth
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/v1/approvals/{uuid4()}/approve",
+            json={},
+        )
+
+    assert response.status_code == 401
